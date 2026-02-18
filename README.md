@@ -188,7 +188,10 @@ Any combination of: EUR, GBP, USD, JPY, CHF, AUD, CAD, NZD, SGD, HKD, CNY, MXN, 
 
 **Build:**
 ```bash
-g++ -fdiagnostics-color=always -g *.cpp -o trading_system
+g++ -fdiagnostics-color=always -g \
+    Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
+    MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
+    TradingSystem.cpp -o trading_system
 ```
 
 Or use the included build script:

@@ -65,14 +65,14 @@ TradingSystem/
 │                      DATA STORAGE LAYER                      │
 │  ┌───────────────────────────────────────────────────────┐  │
 │  │                     OrderBook                         │  │
-│  │  Map<Symbol, SubBook>                                 │  │
+│  │  unordered_map<Symbol, SubBook>   (O(1) lookup)      │  │
+│  │  unordered_map<id, OrderLocation> (O(1) cancel)      │  │
 │  │  ┌─────────────────────────────────────────────────┐  │  │
 │  │  │  EUR/USD → SubBook                              │  │  │
-│  │  │           ├── buyOrders: [Order, Order, ...]    │  │  │
-│  │  │           └── sellOrders: [Order, Order, ...]   │  │  │
-│  │  │  GBP/USD → SubBook                              │  │  │
-│  │  │           ├── buyOrders: [...]                  │  │  │
-│  │  │           └── sellOrders: [...]                 │  │  │
+│  │  │   ├── buyOrders:  map<price, list<Order>>       │  │  │
+│  │  │   │               best bid = rbegin() O(1)      │  │  │
+│  │  │   └── sellOrders: map<price, list<Order>>       │  │  │
+│  │  │                   best ask = begin()  O(1)      │  │  │
 │  │  └─────────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
@@ -106,6 +106,7 @@ TradingSystem/
 **Attributes:**
 | Attribute | Type | Description |
 |-----------|------|-------------|
+| id | long | Auto-increment ID (thread-safe `std::atomic<long>`) |
 | symbol | string | Trading pair (e.g., "EUR/USD") |
 | price | double | Order price |
 | quantity | long | Number of units |
@@ -144,8 +145,10 @@ enum OrderType {
 **Purpose:** Container for buy and sell orders of a single symbol.
 
 **Attributes:**
-- `buyOrders` (std::list<Order>) - Sorted list of buy orders
-- `sellOrders` (std::list<Order>) - Sorted list of sell orders
+- `buyOrders` (`PriceLevelMap`) - Price-sorted map of buy orders: `std::map<double, std::list<Order>>`
+- `sellOrders` (`PriceLevelMap`) - Price-sorted map of sell orders: `std::map<double, std::list<Order>>`
+
+`rbegin()` on buyOrders yields the best bid (highest price); `begin()` on sellOrders yields the best ask (lowest price) — both O(1).
 
 **Design Pattern:** Composite pattern - groups orders by side.
 
@@ -154,11 +157,16 @@ enum OrderType {
 **Purpose:** Central registry for all symbol order books.
 
 **Attributes:**
-- `books` (std::map<string, SubBook>) - Symbol to SubBook mapping
+- `books` (`std::unordered_map<string, SubBook>`) - O(1) symbol to SubBook lookup; lazy-initializes SubBook on first access
+- `orderIndex` (`std::unordered_map<long, OrderLocation>`) - O(1) order ID to location index for cancellation
+
+`OrderLocation` stores `{ PriceLevelMap*, double price, std::list<Order>::iterator }` — enough to erase any order in O(1) without knowing the symbol.
 
 **Key Methods:**
-- `get(symbol)` - Returns SubBook reference (lazy initialization)
+- `get(symbol)` - Returns SubBook reference (lazy initialization via `operator[]`)
 - `put(symbol, subBook)` - Stores/updates SubBook
+- `indexOrder(id, loc)` - Registers an order in the cancellation index
+- `cancel(id)` - Removes order from its price level and the index in O(1)
 
 **Design Pattern:** Repository pattern with lazy initialization.
 
@@ -167,12 +175,12 @@ enum OrderType {
 **Purpose:** Orchestrates order processing and trade checking.
 
 **Attributes:**
-- `orderBook` (OrderBook*) - Pointer to order storage
-- `marketManager` (MarketManager*) - Pointer to market data
+- `orderBook` (`std::unique_ptr<OrderBook>`) - Owned order storage; automatically freed on destruction
+- `marketManager` (`MarketManager*`) - Non-owning pointer to market data (caller retains ownership)
 
 **Key Methods:**
-- `processNewOrder(Order)` - Inserts order in sorted position
-- `processCancelOrder(orderId)` - Cancels existing order
+- `processNewOrder(Order)` - Inserts order into price-level map, registers in cancel index
+- `processCancelOrder(orderId)` - Cancels existing order via O(1) index lookup
 - `checkForTrade(Order, marketPrice)` - Checks execution conditions
 
 **Trade Execution Logic:**
@@ -259,8 +267,11 @@ OrderManager::checkForTrade()
 
 ### Standard Library
 - `<string>` - String handling
-- `<list>` - Doubly-linked lists for order storage
-- `<map>` - Symbol to SubBook mapping
+- `<list>` - Order queues within each price level
+- `<map>` - Price-level map (`PriceLevelMap`) — sorted for O(1) best bid/ask
+- `<unordered_map>` - Symbol lookup and cancellation index — O(1) average
+- `<atomic>` - Thread-safe order ID generation (`std::atomic<long>`)
+- `<memory>` - Smart pointer ownership (`std::unique_ptr`)
 - `<iostream>` - Console I/O
 - `<fstream>` - File I/O for CSV reading
 - `<sstream>` - CSV parsing
@@ -276,8 +287,13 @@ OrderManager::checkForTrade()
 
 ### Build Command
 ```bash
-g++ -fdiagnostics-color=always -g *.cpp -o trading_system
+g++ -fdiagnostics-color=always -g \
+    Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
+    MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
+    TradingSystem.cpp -o trading_system
 ```
+
+(`tests.cpp` has its own `main` and is excluded; use the `build_tests` script for the test binary.)
 
 ## Input Format
 
@@ -294,10 +310,9 @@ EUR, GBP, USD, JPY, CHF, AUD, CAD, NZD, SGD, HKD, CNY, MXN, ZAR combinations
 ## Current Limitations
 
 1. **MarketManager** - Stub implementation only
-2. **Order cancellation** - Not fully implemented
-3. **Trade execution** - Condition checking only, no actual execution
-4. **Persistence** - No database integration
-5. **Multi-threading** - Single-threaded processing
+2. **Trade execution** - Condition checking only, no actual fill
+3. **Persistence** - No database integration
+4. **Multi-threading** - Single-threaded processing (ID generation is atomic-safe; book access is not)
 
 ## Future Development Areas
 
