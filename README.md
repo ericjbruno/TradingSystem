@@ -16,13 +16,15 @@ The system is designed around a clean layered architecture — presentation, bus
 
 - Parses forex orders from CSV input
 - Maintains a per-symbol order book with price-priority sorting
+- O(1) symbol lookup via `unordered_map<string, SubBook>`
 - O(log n) order insertion via price-level map (`std::map<double, std::list<Order>>`)
 - O(1) best bid/ask access — highest buy via `rbegin()`, lowest sell via `begin()`
 - O(1) order cancellation by ID via `unordered_map` index into price-level iterators
-- Supports 5 order types: Market, Limit, Stop, Spot, Swap (buy and sell variants)
+- All 10 order types (Market, Limit, Stop, Spot, Swap × Buy/Sell) route correctly using even/odd enum convention
 - Trade execution condition checking for both securities and spot orders
 - Lazy-initialized order book — SubBooks are created on demand per symbol
 - Pure C++ standard library, no third-party dependencies
+- 39-test suite covering routing, price priority, time priority, and cancellation
 
 ---
 
@@ -30,18 +32,21 @@ The system is designed around a clean layered architecture — presentation, bus
 
 ```
 TradingSystem/
-├── TradingSystem.cpp    # Entry point — CSV parser and order factory
-├── Order.cpp / .h       # Order value object
-├── OrderType.h          # Order type enum with helper functions
-├── OrderBook.cpp / .h   # Central order registry (map of symbol → SubBook)
-├── SubBook.cpp / .h     # Per-symbol buy/sell order containers
-├── OrderManager.cpp / .h# Core business logic — order processing and trade checks
-├── TradeManager.cpp / .h# Trade execution condition evaluation
-├── MarketPrice.cpp / .h # Market price value object
+├── TradingSystem.cpp      # Entry point — CSV parser and order factory
+├── Order.cpp / .h         # Order value object with auto-increment ID
+├── OrderType.h            # Order type enum with even/odd buy/sell convention
+├── OrderBook.cpp / .h     # Central registry: unordered_map<symbol, SubBook> + cancel index
+├── SubBook.cpp / .h       # Per-symbol PriceLevelMap containers (buy + sell)
+├── OrderManager.cpp / .h  # Core business logic — order processing and cancellation
+├── TradeManager.cpp / .h  # Trade execution condition evaluation
+├── MarketPrice.cpp / .h   # Market price value object
 ├── MarketManager.cpp / .h # Market data stub (future integration)
-├── forex_orders.csv     # Sample input data
-├── build                # Build script
-└── ARCHITECTURE.md      # Detailed architecture documentation
+├── tests.cpp              # Test suite (39 tests)
+├── forex_orders.csv       # Sample input data
+├── build                  # Build the main binary
+├── build_tests            # Build and link the test binary
+├── ARCHITECTURE.md        # Detailed architecture documentation
+└── OPTIMIZATIONS.md       # Suggested future performance improvements
 ```
 
 ---
@@ -73,7 +78,7 @@ TradingSystem/
 ```
 OrderBook
 │
-├── books: std::map<string, SubBook>
+├── books: std::unordered_map<string, SubBook>   O(1) lookup
 │   ├── "EUR/USD" ──► SubBook
 │   │                 ├── buyOrders  ──► PriceLevelMap
 │   │                 └── sellOrders ──► PriceLevelMap
@@ -201,8 +206,30 @@ Or use the included build script:
 Processed order #1: BUY 9847 EUR/USD @ 1.0842
 Processed order #2: SELL 10523 GBP/USD @ 1.2634
 ...
-Total orders processed: 50
+Total orders processed: 100
 ```
+
+---
+
+## Testing
+
+The test suite lives in `tests.cpp` and uses a simple pass/fail framework with no external dependencies.
+
+**Build and run:**
+```bash
+./build_tests
+./run_tests
+```
+
+**Test sections (39 tests total):**
+
+| Section | What is verified |
+|---------|-----------------|
+| Order Routing | All 10 order types route to the correct side — MARKET/LIMIT/STOP/SPOT/SWAP × Buy/Sell |
+| Buy-Side Price Priority | `rbegin()` returns best bid (highest price); `begin()` returns lowest buy level |
+| Sell-Side Price Priority | `begin()` returns best ask (lowest price); `rbegin()` returns highest sell level |
+| Time Priority (FIFO) | Orders at the same price level maintain strict insertion order |
+| Order Cancellation | Price level removed when last order cancelled; preserved on partial cancel; invalid ID leaves book unchanged |
 
 ---
 
