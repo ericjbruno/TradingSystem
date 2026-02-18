@@ -48,30 +48,89 @@ TradingSystem/
 
 ## Architecture
 
-The system is organized into three layers:
+### Layers
 
 ```
-[ TradingSystem.cpp ]   ← Parses CSV, creates Orders
-        │
-        ▼
-[ OrderManager ]        ← Processes orders, checks trade conditions
-        │
-        ▼
-[ OrderBook ]           ← map<symbol, SubBook> + unordered_map<orderId, OrderLocation>
-  [ SubBook ]           ← buyOrders (PriceLevelMap) + sellOrders (PriceLevelMap)
+┌─────────────────────────────────────────┐
+│  TradingSystem.cpp                      │  Presentation
+│  CSV parser · Order factory             │
+└────────────────────┬────────────────────┘
+                     │
+┌────────────────────▼────────────────────┐
+│  OrderManager                           │  Business Logic
+│  processNewOrder() · cancel()           │
+│  TradeManager · MarketManager           │
+└────────────────────┬────────────────────┘
+                     │
+┌────────────────────▼────────────────────┐
+│  OrderBook                              │  Data Storage
+│  SubBook (per symbol)                   │
+└─────────────────────────────────────────┘
 ```
 
-### Order Book Organization
+### OrderBook Structure
 
-Orders are stored per currency pair in a `SubBook`, each holding two `PriceLevelMap` structures (`std::map<double, std::list<Order>>`):
+```
+OrderBook
+│
+├── books: std::map<string, SubBook>
+│   ├── "EUR/USD" ──► SubBook
+│   │                 ├── buyOrders  ──► PriceLevelMap
+│   │                 └── sellOrders ──► PriceLevelMap
+│   ├── "GBP/USD" ──► SubBook
+│   │                 ├── buyOrders  ──► PriceLevelMap
+│   │                 └── sellOrders ──► PriceLevelMap
+│   └── ...
+│
+└── orderIndex: std::unordered_map<long, OrderLocation>
+    ├── id=1  ──► { priceMap*, price=1.0842, list::iterator }
+    ├── id=26 ──► { priceMap*, price=1.0842, list::iterator }
+    └── id=51 ──► { priceMap*, price=1.0835, list::iterator }
+```
 
-- **Buy orders** — keyed by price ascending; best bid accessed via `rbegin()` — O(1)
-- **Sell orders** — keyed by price ascending; best ask accessed via `begin()` — O(1)
-- **Insertion** — map insertion at the correct price level — O(log n)
+### PriceLevelMap Structure
 
-### Cancellation Index
+`PriceLevelMap` is `std::map<double, std::list<Order>>` — a sorted map of price levels, each holding a list of orders at that price.
 
-`OrderBook` maintains an `unordered_map<long, OrderLocation>` keyed by order ID. Each `OrderLocation` stores a pointer to the price-level map, the price key, and a `std::list<Order>::iterator` directly to the order. Cancellation uses `list::erase(iterator)` — O(1) — and cleans up empty price levels automatically.
+```
+EUR/USD  buyOrders
+─────────────────────────────────────────────────────
+ price   │  orders at this level
+─────────┼───────────────────────────────────────────
+ 1.0835  │  [ Order{id=51, qty=10789} ]
+ 1.0842  │  [ Order{id=1,  qty=9847} ── Order{id=26, qty=10123} ]
+ 1.0856  │  [ Order{id=76, qty=9912} ]
+─────────────────────────────────────────────────────
+  rbegin() ──► price=1.0856  (best bid — highest buy)
+
+EUR/USD  sellOrders
+─────────────────────────────────────────────────────
+ 1.0849  │  [ Order{id=76, qty=9912} ]
+ 1.0856  │  [ Order{id=26, qty=10123} ]
+ 1.0863  │  [ Order{id=52, qty=11045} ]
+─────────────────────────────────────────────────────
+  begin() ───► price=1.0849  (best ask — lowest sell)
+```
+
+### Cancellation Flow (O(1))
+
+```
+processCancelOrder(id=1)
+        │
+        ▼
+orderIndex.find(1)
+        │
+        ▼  O(1) hash lookup
+OrderLocation { priceMap=&buyOrders, price=1.0842, it }
+        │
+        ▼
+buyOrders[1.0842]: [ Order{id=1} ── Order{id=26} ]
+                     list::erase(it)   ← O(1) iterator removal
+                   [ Order{id=26} ]
+
+if list empty ──► priceMap->erase(1.0842)   clean up price level
+orderIndex.erase(1)                          clean up index
+```
 
 ### Trade Execution Logic
 
