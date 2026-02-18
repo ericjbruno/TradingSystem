@@ -1,0 +1,2 @@
+#!/bin/bash
+g++ -fdiagnostics-color=always -g *.cpp -o trading_system 2>&1
