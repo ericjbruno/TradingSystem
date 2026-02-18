@@ -55,6 +55,10 @@ SubBook& OrderManager::getSubBook(const std::string& symbol) {
     return orderBook->get(symbol);
 }
 
+std::vector<std::string> OrderManager::getSymbols() const {
+    return orderBook->getSymbols();
+}
+
 /*
 // Display the orders within a sub book
 void OrderManager::displaySubBook(std::list<OrderEntry> orders) {

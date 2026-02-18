@@ -1,6 +1,7 @@
 #include <list>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include "Order.h"
 #include "SubBook.h"
 
@@ -67,5 +68,8 @@ public:
     // Returns the counterparty for a given order ID, or nullptr if not found
     // Must be called before cancel() — the order is gone after cancellation
     Counterparty* getOrderCounterparty(long orderId) const;
+
+    // Returns a list of all symbols currently in the order book
+    std::vector<std::string> getSymbols() const;
 };
 #endif

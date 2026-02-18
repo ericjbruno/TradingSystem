@@ -1,5 +1,6 @@
 #include <memory>
 #include <string>
+#include <vector>
 #include "OrderBook.h"
 #include "MarketManager.h"
 #include "SubBook.h"
@@ -18,11 +19,9 @@ public:
 
     void processNewOrder(const Order& order);
     void processCancelOrder(long orderId);
-    void displayOrderBook();
-    void displayOrderBook(std::string symbol);
-    void displaySubBook(const PriceLevelMap& orders);
 
     SubBook& getSubBook(const std::string& symbol);
+    std::vector<std::string> getSymbols() const;
 };
 
 #endif

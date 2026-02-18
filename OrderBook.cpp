@@ -1,3 +1,4 @@
+#include <vector>
 #include "OrderBook.h"
 
 /**
@@ -52,6 +53,14 @@ Counterparty* OrderBook::getOrderCounterparty(long orderId) const {
     auto it = orderIndex.find(orderId);
     if (it == orderIndex.end()) return nullptr;
     return it->second.it->getCounterparty();
+}
+
+std::vector<std::string> OrderBook::getSymbols() const {
+    std::vector<std::string> result;
+    result.reserve(books.size());
+    for (const auto& kv : books)
+        result.push_back(kv.first);
+    return result;
 }
 
 bool OrderBook::cancel(long orderId) {

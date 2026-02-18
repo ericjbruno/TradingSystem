@@ -16,7 +16,7 @@ private:
     long quantity;
     std::string symbol;
     OrderType type;
-    Counterparty* counterparty;
+    Counterparty* counterparty; // non-owning pointer to the counterparty that placed this order
 
     static std::atomic<long> nextId;
 
