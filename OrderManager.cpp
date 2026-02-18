@@ -39,6 +39,10 @@ void OrderManager::processCancelOrder(long orderId) {
     }
 }
 
+SubBook& OrderManager::getSubBook(const std::string& symbol) {
+    return orderBook->get(symbol);
+}
+
 /*
 // Display the orders within a sub book
 void OrderManager::displaySubBook(std::list<OrderEntry> orders) {

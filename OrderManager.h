@@ -20,6 +20,8 @@ public:
     void displayOrderBook();
     void displayOrderBook(std::string symbol);
     void displaySubBook(const PriceLevelMap& orders);
+
+    SubBook& getSubBook(const std::string& symbol);
 };
 
 #endif

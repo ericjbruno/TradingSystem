@@ -1,0 +1,5 @@
+#!/bin/bash
+g++ -fdiagnostics-color=always -g \
+    Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
+    MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
+    tests.cpp -o run_tests 2>&1
