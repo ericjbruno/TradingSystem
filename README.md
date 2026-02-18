@@ -21,10 +21,11 @@ The system is designed around a clean layered architecture — presentation, bus
 - O(1) best bid/ask access — highest buy via `rbegin()`, lowest sell via `begin()`
 - O(1) order cancellation by ID via `unordered_map` index into price-level iterators
 - All 10 order types (Market, Limit, Stop, Spot, Swap × Buy/Sell) route correctly using even/odd enum convention
+- Counterparty tracking — each order carries a non-owning reference to its submitting counterparty; counterparties maintain a live list of their open order IDs, updated automatically on submit and cancel
 - Trade execution condition checking for both securities and spot orders
 - Lazy-initialized order book — SubBooks are created on demand per symbol
 - Pure C++ standard library, no third-party dependencies
-- 39-test suite covering routing, price priority, time priority, and cancellation
+- 53-test suite covering routing, price priority, time priority, cancellation, and counterparty tracking
 
 ---
 
@@ -33,7 +34,8 @@ The system is designed around a clean layered architecture — presentation, bus
 ```
 TradingSystem/
 ├── TradingSystem.cpp      # Entry point — CSV parser and order factory
-├── Order.cpp / .h         # Order value object with auto-increment ID
+├── Counterparty.cpp / .h  # Counterparty identity and open-order tracking
+├── Order.cpp / .h         # Order value object with auto-increment ID and counterparty ref
 ├── OrderType.h            # Order type enum with even/odd buy/sell convention
 ├── OrderBook.cpp / .h     # Central registry: unordered_map<symbol, SubBook> + cancel index
 ├── SubBook.cpp / .h       # Per-symbol PriceLevelMap containers (buy + sell)
@@ -41,7 +43,7 @@ TradingSystem/
 ├── TradeManager.cpp / .h  # Trade execution condition evaluation
 ├── MarketPrice.cpp / .h   # Market price value object
 ├── MarketManager.cpp / .h # Market data stub (future integration)
-├── tests.cpp              # Test suite (39 tests)
+├── tests.cpp              # Test suite (53 tests)
 ├── forex_orders.csv       # Sample input data
 ├── build                  # Build the main binary
 ├── build_tests            # Build and link the test binary
@@ -123,6 +125,9 @@ EUR/USD  sellOrders
 processCancelOrder(id=1)
         │
         ▼
+getOrderCounterparty(1)          retrieve Counterparty* before erasure
+        │
+        ▼
 orderIndex.find(1)
         │
         ▼  O(1) hash lookup
@@ -135,6 +140,7 @@ buyOrders[1.0842]: [ Order{id=1} ── Order{id=26} ]
 
 if list empty ──► priceMap->erase(1.0842)   clean up price level
 orderIndex.erase(1)                          clean up index
+counterparty.removeOrderId(1)               update counterparty tracking
 ```
 
 ### Trade Execution Logic
@@ -189,7 +195,7 @@ Any combination of: EUR, GBP, USD, JPY, CHF, AUD, CAD, NZD, SGD, HKD, CNY, MXN, 
 **Build:**
 ```bash
 g++ -fdiagnostics-color=always -g \
-    Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
+    Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
     MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
     TradingSystem.cpp -o trading_system
 ```
@@ -206,8 +212,8 @@ Or use the included build script:
 
 **Expected output:**
 ```
-Processed order #1: BUY 9847 EUR/USD @ 1.0842
-Processed order #2: SELL 10523 GBP/USD @ 1.2634
+Processed order #1: BUY 9847 EUR/USD @ 1.0842  [Goldman Sachs]
+Processed order #2: SELL 10523 GBP/USD @ 1.2634  [JP Morgan]
 ...
 Total orders processed: 100
 ```
@@ -224,7 +230,7 @@ The test suite lives in `tests.cpp` and uses a simple pass/fail framework with n
 ./run_tests
 ```
 
-**Test sections (39 tests total):**
+**Test sections (53 tests total):**
 
 | Section | What is verified |
 |---------|-----------------|
@@ -233,6 +239,7 @@ The test suite lives in `tests.cpp` and uses a simple pass/fail framework with n
 | Sell-Side Price Priority | `begin()` returns best ask (lowest price); `rbegin()` returns highest sell level |
 | Time Priority (FIFO) | Orders at the same price level maintain strict insertion order |
 | Order Cancellation | Price level removed when last order cancelled; preserved on partial cancel; invalid ID leaves book unchanged |
+| Counterparty Tracking | Order IDs accumulate on submit; removed on cancel; two counterparties track independently; `getCounterparty()` returns correct pointer; bogus cancel leaves counterparty unchanged |
 
 ---
 

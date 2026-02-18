@@ -10,6 +10,7 @@ TradingSystem is a C++ forex trading system designed to process and manage tradi
 TradingSystem/
 ├── Source Files
 │   ├── TradingSystem.cpp    # Main entry point
+│   ├── Counterparty.cpp     # Counterparty identity and order tracking
 │   ├── Order.cpp            # Order implementation
 │   ├── OrderManager.cpp     # Order processing logic
 │   ├── OrderBook.cpp        # Order book storage
@@ -18,6 +19,7 @@ TradingSystem/
 │   └── MarketManager.cpp    # Market data management
 │
 ├── Header Files
+│   ├── Counterparty.h
 │   ├── Order.h
 │   ├── OrderType.h          # Order type enum definitions
 │   ├── OrderManager.h
@@ -82,18 +84,22 @@ TradingSystem/
 │                      VALUE OBJECTS                           │
 │  ┌──────────────┐  ┌─────────────┐  ┌──────────────┐        │
 │  │    Order     │  │ MarketPrice │  │  OrderType   │        │
-│  │  - symbol    │  │  - symbol   │  │  (enum)      │        │
-│  │  - price     │  │  - price    │  │  MARKET_BUY  │        │
-│  │  - quantity  │  │  - quantity │  │  MARKET_SELL │        │
-│  │  - type      │  │  - timestamp│  │  LIMIT_BUY   │        │
-│  │  - active    │  │             │  │  LIMIT_SELL  │        │
-│  └──────────────┘  └─────────────┘  │  STOP_BUY    │        │
-│                                     │  STOP_SELL   │        │
-│                                     │  SPOT_BUY    │        │
-│                                     │  SPOT_SELL   │        │
-│                                     │  SWAP_BUY    │        │
-│                                     │  SWAP_SELL   │        │
-│                                     └──────────────┘        │
+│  │  - id        │  │  - symbol   │  │  (enum)      │        │
+│  │  - symbol    │  │  - price    │  │  MARKET_BUY  │        │
+│  │  - price     │  │  - quantity │  │  MARKET_SELL │        │
+│  │  - quantity  │  │  - timestamp│  │  LIMIT_BUY   │        │
+│  │  - type      │  │             │  │  LIMIT_SELL  │        │
+│  │  - active    │  └─────────────┘  │  STOP_BUY    │        │
+│  │  - cp*       │                   │  STOP_SELL   │        │
+│  └──────┬───────┘                   │  SPOT_BUY    │        │
+│         │ (non-owning)              │  SPOT_SELL   │        │
+│         ▼                           │  SWAP_BUY    │        │
+│  ┌──────────────┐                   │  SWAP_SELL   │        │
+│  │ Counterparty │                   └──────────────┘        │
+│  │  - id        │                                           │
+│  │  - name      │                                           │
+│  │  - orderIds  │                                           │
+│  └──────────────┘                                           │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -112,17 +118,37 @@ TradingSystem/
 | quantity | long | Number of units |
 | type | OrderType | Type of order (market, limit, etc.) |
 | active | bool | Whether order is active |
+| counterparty | `Counterparty*` | Non-owning observer pointer to the submitting counterparty |
 
 **Key Methods:**
 - `comesBefore(Order&)` - Determines price priority ordering
 - `isBuyOrder()` / `isSellOrder()` - Order side checks
 - `isLimitOrder()` - Order type check
+- `getCounterparty()` - Returns the non-owning counterparty pointer
 
 **Price Priority Logic:**
 - Buy orders: Higher price comes first (best bid)
 - Sell orders: Lower price comes first (best ask)
 
-### 2. OrderType
+### 2. Counterparty
+
+**Purpose:** Represents a trading entity that submits orders. Maintains a live list of its open order IDs.
+
+**Attributes:**
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| id | long | Auto-increment ID (thread-safe `std::atomic<long>`) |
+| name | string | Display name (e.g., "Goldman Sachs") |
+| orderIds | `vector<long>` | IDs of currently open orders submitted by this counterparty |
+
+**Key Methods:**
+- `addOrderId(id)` - Called by `OrderManager` after a successful order insertion
+- `removeOrderId(id)` - Called by `OrderManager` after a successful cancellation
+- `getOrderIds()` - Returns the current open order ID list
+
+**Ownership model:** `Counterparty` objects are owned and managed by the caller (e.g., `TradingSystem.cpp`). `Order` holds a non-owning raw pointer — it observes the counterparty, it does not control its lifetime. This follows the same pattern as `MarketManager*` in `OrderManager`.
+
+### 3. OrderType
 
 **Purpose:** Enumeration defining supported order types.
 
@@ -140,7 +166,7 @@ enum OrderType {
 - Even numbers = Buy orders
 - Odd numbers = Sell orders
 
-### 3. SubBook
+### 4. SubBook
 
 **Purpose:** Container for buy and sell orders of a single symbol.
 
@@ -152,7 +178,7 @@ enum OrderType {
 
 **Design Pattern:** Composite pattern - groups orders by side.
 
-### 4. OrderBook
+### 5. OrderBook
 
 **Purpose:** Central registry for all symbol order books.
 
@@ -167,10 +193,11 @@ enum OrderType {
 - `put(symbol, subBook)` - Stores/updates SubBook
 - `indexOrder(id, loc)` - Registers an order in the cancellation index
 - `cancel(id)` - Removes order from its price level and the index in O(1)
+- `getOrderCounterparty(id)` - Returns the `Counterparty*` for an order ID via the cancel index; must be called **before** `cancel()` since the order is erased by cancellation
 
 **Design Pattern:** Repository pattern with lazy initialization.
 
-### 5. OrderManager
+### 6. OrderManager
 
 **Purpose:** Orchestrates order processing and trade checking.
 
@@ -189,13 +216,13 @@ Buy Order:  Execute if order.price >= marketPrice
 Sell Order: Execute if order.price <= marketPrice
 ```
 
-### 6. MarketManager
+### 7. MarketManager
 
 **Purpose:** Manages market data and pricing information.
 
 **Status:** Stub implementation - placeholder for future market data integration.
 
-### 7. MarketPrice
+### 8. MarketPrice
 
 **Purpose:** Represents market pricing information.
 
@@ -219,8 +246,9 @@ Sell Order: Execute if order.price <= marketPrice
    │  - Extract: symbol, price, quantity, side
    │
    ▼
-3. Create Order object
+3. Assign counterparty + create Order object
    │  - Map "BUY"/"SELL" to OrderType
+   │  - Pass Counterparty* (non-owning) to Order constructor
    │
    ▼
 4. OrderManager::processNewOrder(order)
@@ -230,14 +258,38 @@ Sell Order: Execute if order.price <= marketPrice
    │  - Lazy init SubBook if needed
    │
    ▼
-6. Select appropriate list (buyOrders/sellOrders)
+6. Select appropriate PriceLevelMap (buyOrders/sellOrders)
    │
    ▼
-7. Insert order in sorted position
-   │  - Maintain price priority
+7. Insert order at price level — O(log n)
+   │  - map<price, list<Order>> maintains sorted order
    │
    ▼
-8. Order stored in SubBook
+8. Index order for O(1) cancellation
+   │  - orderIndex[id] = { priceMap*, price, list::iterator }
+   │
+   ▼
+9. Register with counterparty
+      counterparty->addOrderId(order.getId())
+```
+
+### Cancellation Flow
+
+```
+OrderManager::processCancelOrder(id)
+   │
+   ▼
+1. getOrderCounterparty(id)      O(1) — read Counterparty* via cancel index
+   │                             (must happen before erasure)
+   ▼
+2. OrderBook::cancel(id)
+   │  a. orderIndex.find(id)     O(1) hash lookup → OrderLocation
+   │  b. list::erase(iterator)   O(1) removal from price-level list
+   │  c. if level empty → priceMap->erase(price)
+   │  d. orderIndex.erase(id)
+   │
+   ▼
+3. counterparty->removeOrderId(id)   update counterparty tracking
 ```
 
 ### Trade Check Flow
@@ -262,16 +314,19 @@ OrderManager::checkForTrade()
 | Facade | OrderManager | Simplified interface to subsystems |
 | Value Object | Order, MarketPrice | Immutable data containers |
 | Strategy | OrderType | Type-based behavior classification |
+| Observer (non-owning) | Counterparty ↔ Order | Order observes its counterparty via raw pointer; counterparty tracks open order IDs |
 
 ## Dependencies
 
 ### Standard Library
 - `<string>` - String handling
+- `<vector>` - Open order ID list in `Counterparty`
 - `<list>` - Order queues within each price level
 - `<map>` - Price-level map (`PriceLevelMap`) — sorted for O(1) best bid/ask
 - `<unordered_map>` - Symbol lookup and cancellation index — O(1) average
-- `<atomic>` - Thread-safe order ID generation (`std::atomic<long>`)
+- `<atomic>` - Thread-safe ID generation for `Order` and `Counterparty` (`std::atomic<long>`)
 - `<memory>` - Smart pointer ownership (`std::unique_ptr`)
+- `<algorithm>` - `std::remove` for counterparty order ID removal
 - `<iostream>` - Console I/O
 - `<fstream>` - File I/O for CSV reading
 - `<sstream>` - CSV parsing
@@ -288,7 +343,7 @@ OrderManager::checkForTrade()
 ### Build Command
 ```bash
 g++ -fdiagnostics-color=always -g \
-    Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
+    Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
     MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
     TradingSystem.cpp -o trading_system
 ```
