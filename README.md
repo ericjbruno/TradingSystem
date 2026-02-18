@@ -16,6 +16,9 @@ The system is designed around a clean layered architecture — presentation, bus
 
 - Parses forex orders from CSV input
 - Maintains a per-symbol order book with price-priority sorting
+- O(log n) order insertion via price-level map (`std::map<double, std::list<Order>>`)
+- O(1) best bid/ask access — highest buy via `rbegin()`, lowest sell via `begin()`
+- O(1) order cancellation by ID via `unordered_map` index into price-level iterators
 - Supports 5 order types: Market, Limit, Stop, Spot, Swap (buy and sell variants)
 - Trade execution condition checking for both securities and spot orders
 - Lazy-initialized order book — SubBooks are created on demand per symbol
@@ -54,16 +57,21 @@ The system is organized into three layers:
 [ OrderManager ]        ← Processes orders, checks trade conditions
         │
         ▼
-[ OrderBook ]           ← map<symbol, SubBook>
-  [ SubBook ]           ← buyOrders (list) + sellOrders (list)
+[ OrderBook ]           ← map<symbol, SubBook> + unordered_map<orderId, OrderLocation>
+  [ SubBook ]           ← buyOrders (PriceLevelMap) + sellOrders (PriceLevelMap)
 ```
 
 ### Order Book Organization
 
-Orders are stored per currency pair in a `SubBook`, each holding two price-sorted lists:
+Orders are stored per currency pair in a `SubBook`, each holding two `PriceLevelMap` structures (`std::map<double, std::list<Order>>`):
 
-- **Buy orders** — sorted highest price first (best bid at top)
-- **Sell orders** — sorted lowest price first (best ask at top)
+- **Buy orders** — keyed by price ascending; best bid accessed via `rbegin()` — O(1)
+- **Sell orders** — keyed by price ascending; best ask accessed via `begin()` — O(1)
+- **Insertion** — map insertion at the correct price level — O(log n)
+
+### Cancellation Index
+
+`OrderBook` maintains an `unordered_map<long, OrderLocation>` keyed by order ID. Each `OrderLocation` stores a pointer to the price-level map, the price key, and a `std::list<Order>::iterator` directly to the order. Cancellation uses `list::erase(iterator)` — O(1) — and cleans up empty price levels automatically.
 
 ### Trade Execution Logic
 
@@ -144,7 +152,6 @@ Total orders processed: 50
 This is an early-stage implementation. The following are stubs or not yet implemented:
 
 - `MarketManager` — placeholder for live market data feeds
-- `processCancelOrder()` — order cancellation not yet implemented
 - Trade execution — conditions are checked but orders are not actually filled
 - No order history or audit trail
 - No persistence layer
@@ -156,7 +163,7 @@ This is an early-stage implementation. The following are stubs or not yet implem
 
 - Full trade matching engine
 - Real-time market data integration (WebSocket / FIX protocol)
-- Order cancellation and modification
+- Order modification
 - Trade and order history tracking
 - Position and portfolio management
 - Risk management and limits
