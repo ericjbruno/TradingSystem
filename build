@@ -1,2 +1,5 @@
 #!/bin/bash
-g++ -fdiagnostics-color=always -g *.cpp -o trading_system 2>&1
+g++ -fdiagnostics-color=always -g \
+    Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
+    MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
+    TradingSystem.cpp -o trading_system 2>&1

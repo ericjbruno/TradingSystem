@@ -5,6 +5,8 @@
 #ifndef ORDER_H
 #define ORDER_H
 
+class Counterparty;  // forward declaration — Order stores a non-owning pointer
+
 class Order
 {
 private:
@@ -14,6 +16,7 @@ private:
     long quantity;
     std::string symbol;
     OrderType type;
+    Counterparty* counterparty;
 
     static std::atomic<long> nextId;
 
@@ -21,9 +24,11 @@ public:
     Order( std::string symbol,
            double price,
            int quantity,
-           OrderType type);
+           OrderType type,
+           Counterparty* counterparty);
     ~Order();
     long getId() const;
+    Counterparty* getCounterparty() const;
     const std::string& getSymbol() const;
     double getPrice() const;
     OrderType getType() const;

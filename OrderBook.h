@@ -7,6 +7,8 @@
 #ifndef ORDERBOOK_H
 #define ORDERBOOK_H
 
+class Counterparty;  // forward declaration
+
 // Locates a specific order within a price-level map for O(1) cancellation
 struct OrderLocation {
     PriceLevelMap* priceMap;           // pointer to buy or sell map in SubBook
@@ -61,5 +63,9 @@ public:
     // Cancel an order by ID: removes from price-level list and index
     // Returns true if found and cancelled, false if ID not found
     bool cancel(long orderId);
+
+    // Returns the counterparty for a given order ID, or nullptr if not found
+    // Must be called before cancel() — the order is gone after cancellation
+    Counterparty* getOrderCounterparty(long orderId) const;
 };
 #endif

@@ -1,6 +1,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include "Counterparty.h"
 #include "MarketManager.h"
 #include "OrderManager.h"
 #include "OrderBook.h"
@@ -32,12 +33,22 @@ void OrderManager::processNewOrder(const Order& newOrder) {
     // Index the order for O(1) cancellation
     auto it = std::prev(priceLevel.end());
     orderBook->indexOrder(newOrder.getId(), {&orders, newOrder.getPrice(), it});
+
+    // Register order with its counterparty
+    if (Counterparty* cp = newOrder.getCounterparty())
+        cp->addOrderId(newOrder.getId());
 }
 
 void OrderManager::processCancelOrder(long orderId) {
+    // Retrieve counterparty before the order is erased from the book
+    Counterparty* cp = orderBook->getOrderCounterparty(orderId);
+
     if (!orderBook->cancel(orderId)) {
         std::cerr << "Cancel failed: order " << orderId << " not found" << std::endl;
+        return;
     }
+
+    if (cp) cp->removeOrderId(orderId);
 }
 
 SubBook& OrderManager::getSubBook(const std::string& symbol) {

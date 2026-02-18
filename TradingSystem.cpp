@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include "Counterparty.h"
 #include "OrderManager.h"
 #include "MarketManager.h"
 
@@ -10,6 +11,14 @@ int main() {
     // Create the Market and Trade Managers
     auto marketManager = std::make_unique<MarketManager>();
     auto orderManager  = std::make_unique<OrderManager>(marketManager.get());
+
+    // Sample counterparties — orders are assigned round-robin
+    Counterparty counterparties[] = {
+        Counterparty("Goldman Sachs"),
+        Counterparty("JP Morgan"),
+        Counterparty("Deutsche Bank")
+    };
+    const int cpCount = 3;
 
     // Open the CSV file
     std::ifstream file("forex_orders.csv");
@@ -47,14 +56,16 @@ int main() {
             orderType = OrderType::SPOT_SELL;
         }
 
-        // Create and process the order
-        Order order(symbol, price, quantity, orderType);
+        // Assign counterparty round-robin and create order
+        Counterparty* cp = &counterparties[orderCount % cpCount];
+        Order order(symbol, price, quantity, orderType, cp);
         orderManager->processNewOrder(order);
 
         orderCount++;
         std::cout << "Processed order #" << orderCount << ": "
                   << side << " " << quantity << " " << symbol
-                  << " @ " << price << std::endl;
+                  << " @ " << price
+                  << "  [" << cp->getName() << "]" << std::endl;
     }
 
     file.close();

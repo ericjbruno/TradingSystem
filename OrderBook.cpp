@@ -48,6 +48,12 @@ void OrderBook::indexOrder(long orderId, OrderLocation loc) {
     orderIndex[orderId] = loc;
 }
 
+Counterparty* OrderBook::getOrderCounterparty(long orderId) const {
+    auto it = orderIndex.find(orderId);
+    if (it == orderIndex.end()) return nullptr;
+    return it->second.it->getCounterparty();
+}
+
 bool OrderBook::cancel(long orderId) {
     auto indexIt = orderIndex.find(orderId);
     if (indexIt == orderIndex.end()) {
