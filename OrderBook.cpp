@@ -52,3 +52,28 @@ void OrderBook::put(const std::string& symbol, const SubBook& subBook) {
     books[symbol] = subBook;
 }
 
+void OrderBook::indexOrder(long orderId, OrderLocation loc) {
+    orderIndex[orderId] = loc;
+}
+
+bool OrderBook::cancel(long orderId) {
+    auto indexIt = orderIndex.find(orderId);
+    if (indexIt == orderIndex.end()) {
+        return false;
+    }
+
+    OrderLocation& loc = indexIt->second;
+
+    // Remove the order from its price-level list: O(1)
+    auto& priceLevel = (*loc.priceMap)[loc.price];
+    priceLevel.erase(loc.it);
+
+    // Clean up the price level if it's now empty
+    if (priceLevel.empty()) {
+        loc.priceMap->erase(loc.price);
+    }
+
+    orderIndex.erase(indexIt);
+    return true;
+}
+

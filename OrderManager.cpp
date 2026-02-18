@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iterator>
 #include "MarketManager.h"
 #include "OrderManager.h"
 #include "OrderBook.h"
@@ -24,11 +25,18 @@ void OrderManager::processNewOrder(const Order& newOrder) {
         ? sb.getBuyOrdersRef()
         : sb.getSellOrdersRef();
 
-    orders[newOrder.getPrice()].push_back(newOrder);
+    auto& priceLevel = orders[newOrder.getPrice()];
+    priceLevel.push_back(newOrder);
+
+    // Index the order for O(1) cancellation
+    auto it = std::prev(priceLevel.end());
+    orderBook->indexOrder(newOrder.getId(), {&orders, newOrder.getPrice(), it});
 }
 
 void OrderManager::processCancelOrder(long orderId) {
-    // Logic to cancel an existing order
+    if (!orderBook->cancel(orderId)) {
+        std::cerr << "Cancel failed: order " << orderId << " not found" << std::endl;
+    }
 }
 
 /*

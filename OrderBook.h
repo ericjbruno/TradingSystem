@@ -1,11 +1,19 @@
 #include <list>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include "Order.h"
 #include "SubBook.h"
 
 #ifndef ORDERBOOK_H
 #define ORDERBOOK_H
+
+// Locates a specific order within a price-level map for O(1) cancellation
+struct OrderLocation {
+    PriceLevelMap* priceMap;           // pointer to buy or sell map in SubBook
+    double price;                       // price level key in the map
+    std::list<Order>::iterator it;      // iterator to this order in the list
+};
 
 /**
  * OrderBook - Manages order books for multiple trading symbols
@@ -17,10 +25,8 @@
 class OrderBook
 {
 private:
-    // Map of trading symbols to their respective order sub-books
-    // Key: symbol (e.g., "AAPL", "GOOGL")
-    // Value: SubBook containing buy and sell order lists for that symbol
     std::map<std::string, SubBook> books;
+    std::unordered_map<long, OrderLocation> orderIndex;  // O(1) lookup by order ID
 
 public:
     /**
@@ -49,5 +55,12 @@ public:
      * @param subBook The SubBook to associate with this symbol
      */
     void put(const std::string& symbol, const SubBook& subBook);
+
+    // Index an order for O(1) cancellation lookup
+    void indexOrder(long orderId, OrderLocation loc);
+
+    // Cancel an order by ID: removes from price-level list and index
+    // Returns true if found and cancelled, false if ID not found
+    bool cancel(long orderId);
 };
 #endif

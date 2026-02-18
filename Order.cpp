@@ -1,15 +1,20 @@
 #include "Order.h"
 
+long Order::nextId = 1;
+
 Order::Order( std::string symbol,
               double price,
               int quantity,
               OrderType type ) {
+    this->id = nextId++;
     this->symbol = symbol;
     this->price = price;
     this->quantity = quantity;
     this->type = type;
     this->active = true;
 }
+
+long Order::getId() const { return id; }
 
 Order::~Order()
 {

@@ -7,11 +7,14 @@
 class Order
 {
 private:
+    long id;
     bool active;
     double price;
     long quantity;
     std::string symbol;
     OrderType type;
+
+    static long nextId;
 
 public:
     Order( std::string symbol,
@@ -19,6 +22,7 @@ public:
            int quantity,
            OrderType type);
     ~Order();
+    long getId() const;
     std::string getSymbol() const;
     double getPrice() const;
     OrderType getType() const;
