@@ -1,0 +1,15 @@
+# Compiled binaries
+OrderEntry
+SubBook
+TradingSystem
+trading_system
+
+# Build artifacts
+*.o
+*.d
+
+# IDE
+.vscode/
+
+# Claude metadata
+.claude/
