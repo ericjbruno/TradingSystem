@@ -23,7 +23,7 @@ public:
            OrderType type);
     ~Order();
     long getId() const;
-    std::string getSymbol() const;
+    const std::string& getSymbol() const;
     double getPrice() const;
     OrderType getType() const;
     long getQuantity() const;

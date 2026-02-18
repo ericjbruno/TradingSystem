@@ -1,5 +1,4 @@
 #include <list>
-#include <map>
 #include <string>
 #include <unordered_map>
 #include "Order.h"
@@ -25,7 +24,7 @@ struct OrderLocation {
 class OrderBook
 {
 private:
-    std::map<std::string, SubBook> books;
+    std::unordered_map<std::string, SubBook> books;  // O(1) symbol lookup
     std::unordered_map<long, OrderLocation> orderIndex;  // O(1) lookup by order ID
 
 public:

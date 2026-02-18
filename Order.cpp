@@ -20,10 +20,10 @@ Order::~Order()
 {
 }
 
-std::string Order::getSymbol() const { return symbol; }
+const std::string& Order::getSymbol() const { return symbol; }
 double Order::getPrice() const { return price; }
-bool Order::isBuyOrder() const { return type == OrderType::MARKET_BUY; }
-bool Order::isSellOrder() const { return type == OrderType::MARKET_SELL; }
+bool Order::isBuyOrder() const { return ::isBuyOrder(type); }
+bool Order::isSellOrder() const { return ::isSellOrder(type); }
 bool Order::comesBefore(double otherPrice) const {
     if (isBuyOrder()) {
         return price > otherPrice; // Higher price first for buys
