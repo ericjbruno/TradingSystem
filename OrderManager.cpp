@@ -1,5 +1,6 @@
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include "MarketManager.h"
 #include "OrderManager.h"
 #include "OrderBook.h"
@@ -7,7 +8,7 @@
 #include "Order.h"
 
 OrderManager::OrderManager(MarketManager* marketMgr) {
-    orderBook = new OrderBook();
+    orderBook = std::make_unique<OrderBook>();
     marketManager = marketMgr;
 }
 

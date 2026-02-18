@@ -1,12 +1,13 @@
+#include <atomic>
 #include "Order.h"
 
-long Order::nextId = 1;
+std::atomic<long> Order::nextId{1};
 
 Order::Order( std::string symbol,
               double price,
               int quantity,
               OrderType type ) {
-    this->id = nextId++;
+    this->id = nextId.fetch_add(1, std::memory_order_relaxed);
     this->symbol = symbol;
     this->price = price;
     this->quantity = quantity;

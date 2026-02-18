@@ -1,3 +1,4 @@
+#include <atomic>
 #include <string>
 #include "OrderType.h"
 
@@ -14,7 +15,7 @@ private:
     std::string symbol;
     OrderType type;
 
-    static long nextId;
+    static std::atomic<long> nextId;
 
 public:
     Order( std::string symbol,

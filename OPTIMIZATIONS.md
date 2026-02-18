@@ -1,6 +1,7 @@
 # Suggested Optimizations
 
-Remaining performance and safety improvements identified but not yet implemented.
+Performance and safety improvements. Items marked **[Done]** have been implemented.
+Remaining items are not yet implemented.
 
 ---
 
@@ -83,7 +84,7 @@ Order(std::string symbol, double price, int quantity, OrderType type)
 
 ---
 
-## 8. `nextId` not thread-safe
+## 8. `nextId` not thread-safe **[Done]**
 
 **File:** `Order.h:17`, `Order.cpp:3`
 
@@ -102,7 +103,7 @@ this->id = nextId.fetch_add(1, std::memory_order_relaxed);
 
 ---
 
-## 9. Raw pointers → smart pointers
+## 9. Raw pointers → smart pointers **[Done]**
 
 **File:** `OrderManager.h`, `OrderManager.cpp`
 
@@ -122,7 +123,7 @@ orderBook = std::make_unique<OrderBook>();
 
 ---
 
-## 10. `std::cout` in `OrderBook::get()` hot path
+## 10. `std::cout` in `OrderBook::get()` hot path **[Done]**
 
 **File:** `OrderBook.cpp:34`
 

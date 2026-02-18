@@ -1,3 +1,4 @@
+#include <memory>
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -7,8 +8,8 @@
 
 int main() {
     // Create the Market and Trade Managers
-    MarketManager* marketManager = new MarketManager();
-    OrderManager* orderManager = new OrderManager(marketManager);
+    auto marketManager = std::make_unique<MarketManager>();
+    auto orderManager  = std::make_unique<OrderManager>(marketManager.get());
 
     // Open the CSV file
     std::ifstream file("forex_orders.csv");
@@ -47,25 +48,18 @@ int main() {
         }
 
         // Create and process the order
-        Order* order = new Order(symbol, price, quantity, orderType);
-        orderManager->processNewOrder(*order);
+        Order order(symbol, price, quantity, orderType);
+        orderManager->processNewOrder(order);
 
         orderCount++;
         std::cout << "Processed order #" << orderCount << ": "
                   << side << " " << quantity << " " << symbol
                   << " @ " << price << std::endl;
-
-        // Clean up
-        delete order;
     }
 
     file.close();
 
     std::cout << "\nTotal orders processed: " << orderCount << std::endl;
-
-    // Clean up
-    delete orderManager;
-    delete marketManager;
 
     return 0;
 }

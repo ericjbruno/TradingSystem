@@ -1,4 +1,3 @@
-#include <iostream>
 #include "OrderBook.h"
 
 /**
@@ -29,13 +28,6 @@ OrderBook::~OrderBook()
  * @return Reference to the SubBook for this symbol (existing or newly created)
  */
 SubBook& OrderBook::get(const std::string& symbol) {
-    // Check if this is the first time we're seeing this symbol
-    if ( books.find(symbol) == books.end() ) {
-        std::cout << "Creating order book for symbol: " << symbol << std::endl;
-    }
-
-    // Return reference to the SubBook (creates new one if it doesn't exist)
-    // Using operator[] will default-construct a SubBook if the key is not found
     return books[symbol];
 }
 

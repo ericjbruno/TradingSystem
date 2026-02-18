@@ -1,14 +1,15 @@
+#include <memory>
+#include <string>
 #include "OrderBook.h"
 #include "MarketManager.h"
 #include "SubBook.h"
-#include <string>
 
 #ifndef ORDERMANAGER_H
 #define ORDERMANAGER_H
 class OrderManager
 {
 private:
-    OrderBook* orderBook;
+    std::unique_ptr<OrderBook> orderBook;
     MarketManager* marketManager;
 
 public:
