@@ -1,27 +1,30 @@
 #include <list>
+#include <map>
 #include "Order.h"
 
 #ifndef SUBBOOK_H
 #define SUBBOOK_H
 
+// Price-level map: price -> list of orders at that price
+// Buy orders: highest price first (best bid = rbegin())
+// Sell orders: lowest price first (best ask = begin())
+using PriceLevelMap = std::map<double, std::list<Order>>;
+
 class SubBook
 {
 private:
-    std::list<Order> buyOrders;
-    std::list<Order> sellOrders;
+    PriceLevelMap buyOrders;
+    PriceLevelMap sellOrders;
 
 public:
     SubBook();
     ~SubBook();
 
-    std::list<Order> getBuyOrders() const { return buyOrders; }
-    std::list<Order> getSellOrders() const { return sellOrders; }
+    const PriceLevelMap& getBuyOrders() const { return buyOrders; }
+    const PriceLevelMap& getSellOrders() const { return sellOrders; }
 
-    std::list<Order>& getBuyOrdersRef() { return buyOrders; }
-    std::list<Order>& getSellOrdersRef() { return sellOrders; }
-
-    std::list<Order> getBuyOrdersCopy()  { return buyOrders; }
-    std::list<Order> getSellOrdersCopy()  { return sellOrders; }
+    PriceLevelMap& getBuyOrdersRef() { return buyOrders; }
+    PriceLevelMap& getSellOrdersRef() { return sellOrders; }
 };
 
 

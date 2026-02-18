@@ -1,7 +1,7 @@
 #include "OrderBook.h"
 #include "MarketManager.h"
+#include "SubBook.h"
 #include <string>
-#include <list>
 
 #ifndef ORDERMANAGER_H
 #define ORDERMANAGER_H
@@ -19,7 +19,7 @@ public:
     void processCancelOrder(long orderId);
     void displayOrderBook();
     void displayOrderBook(std::string symbol);
-    void displaySubBook(std::list<Order> orders);
+    void displaySubBook(const PriceLevelMap& orders);
 };
 
 #endif

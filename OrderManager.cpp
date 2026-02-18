@@ -1,4 +1,3 @@
-#include <list>
 #include <iostream>
 #include "MarketManager.h"
 #include "OrderManager.h"
@@ -12,32 +11,20 @@ OrderManager::OrderManager(MarketManager* marketMgr) {
 }
 
 OrderManager::~OrderManager() {
-    
+
 }
 
 void OrderManager::processNewOrder(const Order& newOrder) {
     // Get the order book for this symbol
-    std::string symbol = newOrder.getSymbol();
-    SubBook& sb = orderBook->get( symbol );
+    SubBook& sb = orderBook->get( newOrder.getSymbol() );
 
-    // Get the right sub book (buy or sell orders) - using reference to modify in place
-    std::list<Order>& orders = newOrder.isBuyOrder()
+    // Select buy or sell price-level map and insert at the order's price
+    // map maintains sorted order automatically: O(log n)
+    PriceLevelMap& orders = newOrder.isBuyOrder()
         ? sb.getBuyOrdersRef()
         : sb.getSellOrdersRef();
 
-    // Walk the sub book and find the correct location for this order
-    auto it = orders.begin();
-    while ( it != orders.end() ) {
-        Order entry = *it;
-        if (newOrder.comesBefore(entry.getPrice())) {
-            orders.insert(it, newOrder);
-            return;
-        }
-        ++it;
-    }
-
-    // Just add the order to the end of the list
-    orders.push_back(newOrder);
+    orders[newOrder.getPrice()].push_back(newOrder);
 }
 
 void OrderManager::processCancelOrder(long orderId) {
