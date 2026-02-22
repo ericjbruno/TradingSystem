@@ -1,12 +1,12 @@
 # TradingSystem
 
-A C++ forex order management system that processes trading orders, maintains a live order book, and checks trade execution conditions across multiple currency pairs.
+A C++ forex trading system that processes orders, maintains a live price-time-priority order book, executes SPOT trades via a continuous matching engine, and notifies counterparties of fills.
 
 ---
 
 ## Overview
 
-TradingSystem reads forex orders from a CSV file, builds a sorted order book organized by currency pair and side (buy/sell), and evaluates each order against market prices to determine if execution conditions are met.
+TradingSystem reads forex orders from a CSV file (or accepts them programmatically), attempts to match each incoming SPOT order against the standing book, queues any unfilled remainder, and prints an ASCII snapshot of the resulting order book.
 
 The system is designed around a clean layered architecture — presentation, business logic, and data storage — with no external dependencies beyond the C++ standard library.
 
@@ -14,18 +14,16 @@ The system is designed around a clean layered architecture — presentation, bus
 
 ## Features
 
-- Parses forex orders from CSV input
-- Maintains a per-symbol order book with price-priority sorting
-- O(1) symbol lookup via `unordered_map<string, SubBook>`
-- O(log n) order insertion via price-level map (`std::map<double, std::list<Order>>`)
-- O(1) best bid/ask access — highest buy via `rbegin()`, lowest sell via `begin()`
-- O(1) order cancellation by ID via `unordered_map` index into price-level iterators
-- All 10 order types (Market, Limit, Stop, Spot, Swap × Buy/Sell) route correctly using even/odd enum convention
-- Counterparty tracking — each order carries a non-owning reference to its submitting counterparty; counterparties maintain a live list of their open order IDs, updated automatically on submit and cancel
-- Trade execution condition checking for both securities and spot orders
+- **SPOT matching engine** — incoming SPOT orders are matched against the opposite side before queuing; supports partial fills, multi-level sweeps, and counterparty fill notifications
+- **Price-time priority** — bids sorted highest-first (`BidMap`), asks sorted lowest-first (`AskMap`); `begin()` always returns the best price on both sides in O(1)
+- **Per-symbol SubBook** — `BidMap` (`std::map` with `std::greater`) and `AskMap` (`std::map` default ascending) replace the old single-type `PriceLevelMap`
+- **O(1) cancellation** — `OrderLocation` stores a `std::list` iterator and a type-erased `eraseLevel` lambda, enabling stable O(1) removal regardless of map type
+- **Counterparty tracking** — each order carries a non-owning pointer to its counterparty; counterparties maintain a live list of open order IDs and a fill history (`vector<TradeNotification>`)
+- **Trade logging** — every fill is printed to stdout with symbol, quantity, price, and both sides' names and order IDs
+- All 10 order types (Market, Limit, Stop, Spot, Swap × Buy/Sell) route correctly using the even/odd enum convention
 - Lazy-initialized order book — SubBooks are created on demand per symbol
 - Pure C++ standard library, no third-party dependencies
-- 53-test suite covering routing, price priority, time priority, cancellation, and counterparty tracking
+- 109-test suite covering routing, price priority, time priority, cancellation, counterparty tracking, and 7 SPOT matching scenarios
 
 ---
 
@@ -33,20 +31,18 @@ The system is designed around a clean layered architecture — presentation, bus
 
 ```
 TradingSystem/
-├── TradingSystem.cpp      # Entry point — CSV parser and order factory
-├── Counterparty.cpp / .h  # Counterparty identity and open-order tracking
+├── TradingSystem.cpp      # Entry point — CSV parser, order factory, printOrderBook()
+├── Counterparty.cpp / .h  # Counterparty identity, open-order tracking, TradeNotification
 ├── Order.cpp / .h         # Order value object with auto-increment ID and counterparty ref
-├── OrderType.h            # Order type enum with even/odd buy/sell convention
-├── OrderBook.cpp / .h     # Central registry: unordered_map<symbol, SubBook> + cancel index
-├── SubBook.cpp / .h       # Per-symbol PriceLevelMap containers (buy + sell)
-├── OrderManager.cpp / .h  # Core business logic — order processing and cancellation
-├── TradeManager.cpp / .h  # Trade execution condition evaluation
+├── OrderType.h            # Order type enum (even=buy, odd=sell)
+├── OrderBook.cpp / .h     # Central registry: symbol→SubBook map + OrderLocation cancel index
+├── SubBook.cpp / .h       # BidMap and AskMap type aliases + SubBook container
+├── OrderManager.cpp / .h  # Order lifecycle — matching, queuing, cancellation
+├── TradeManager.cpp / .h  # Matching engine, fill logging, Trade and TradeManager
 ├── MarketPrice.cpp / .h   # Market price value object
 ├── MarketManager.cpp / .h # Market data stub (future integration)
-├── tests.cpp              # Test suite (53 tests)
+├── tests.cpp              # Test suite (109 tests)
 ├── forex_orders.csv       # Sample input data
-├── build                  # Build the main binary
-├── build_tests            # Build and link the test binary
 ├── ARCHITECTURE.md        # Detailed architecture documentation
 └── OPTIMIZATIONS.md       # Suggested future performance improvements
 ```
@@ -61,62 +57,73 @@ TradingSystem/
 ┌─────────────────────────────────────────┐
 │  TradingSystem.cpp                      │  Presentation
 │  CSV parser · Order factory             │
+│  printOrderBook() ASCII display         │
 └────────────────────┬────────────────────┘
                      │
 ┌────────────────────▼────────────────────┐
 │  OrderManager                           │  Business Logic
 │  processNewOrder() · cancel()           │
-│  TradeManager · MarketManager           │
+│  ┌─────────────────────────────────┐    │
+│  │  TradeManager                   │    │
+│  │  matchSpotOrders()              │    │
+│  │  logAndNotify()  pricesMatch()  │    │
+│  └─────────────────────────────────┘    │
+│  MarketManager (stub)                   │
 └────────────────────┬────────────────────┘
                      │
 ┌────────────────────▼────────────────────┐
 │  OrderBook                              │  Data Storage
-│  SubBook (per symbol)                   │
+│  SubBook per symbol (BidMap + AskMap)   │
 └─────────────────────────────────────────┘
 ```
 
-### OrderBook Structure
+### OrderBook and SubBook Structure
 
 ```
 OrderBook
 │
-├── books: std::unordered_map<string, SubBook>   O(1) lookup
+├── books: unordered_map<string, SubBook>          O(1) lookup
 │   ├── "EUR/USD" ──► SubBook
-│   │                 ├── buyOrders  ──► PriceLevelMap
-│   │                 └── sellOrders ──► PriceLevelMap
-│   ├── "GBP/USD" ──► SubBook
-│   │                 ├── buyOrders  ──► PriceLevelMap
-│   │                 └── sellOrders ──► PriceLevelMap
+│   │                 ├── buyOrders  (BidMap — descending, begin()=best bid)
+│   │                 └── sellOrders (AskMap — ascending,  begin()=best ask)
 │   └── ...
 │
-└── orderIndex: std::unordered_map<long, OrderLocation>
-    ├── id=1  ──► { priceMap*, price=1.0842, list::iterator }
-    ├── id=26 ──► { priceMap*, price=1.0842, list::iterator }
-    └── id=51 ──► { priceMap*, price=1.0835, list::iterator }
+└── orderIndex: unordered_map<long, OrderLocation>  O(1) cancel
+    ├── id=1  ──► { list<Order>*, price=1.0842, iterator, eraseLevel }
+    └── id=26 ──► { list<Order>*, price=1.0842, iterator, eraseLevel }
 ```
 
-### PriceLevelMap Structure
+### Price Level Structure
 
-`PriceLevelMap` is `std::map<double, std::list<Order>>` — a sorted map of price levels, each holding a list of orders at that price.
+Each map entry holds a `std::list<Order>` in strict FIFO arrival order:
 
 ```
-EUR/USD  buyOrders
-─────────────────────────────────────────────────────
- price   │  orders at this level
-─────────┼───────────────────────────────────────────
+EUR/USD  buyOrders  (BidMap — highest price first)
+──────────────────────────────────────────────────
+ 1.0856  │  [ Order{id=76, qty=9912} ]           ← begin() = best bid
+ 1.0842  │  [ Order{id=1,  qty=9847} ─ Order{id=26, qty=10123} ]
  1.0835  │  [ Order{id=51, qty=10789} ]
- 1.0842  │  [ Order{id=1,  qty=9847} ── Order{id=26, qty=10123} ]
- 1.0856  │  [ Order{id=76, qty=9912} ]
-─────────────────────────────────────────────────────
-  rbegin() ──► price=1.0856  (best bid — highest buy)
 
-EUR/USD  sellOrders
-─────────────────────────────────────────────────────
- 1.0849  │  [ Order{id=76, qty=9912} ]
- 1.0856  │  [ Order{id=26, qty=10123} ]
- 1.0863  │  [ Order{id=52, qty=11045} ]
-─────────────────────────────────────────────────────
-  begin() ───► price=1.0849  (best ask — lowest sell)
+EUR/USD  sellOrders  (AskMap — lowest price first)
+──────────────────────────────────────────────────
+ 1.0863  │  [ Order{id=52, qty=11045} ]           ← begin() = best ask
+ 1.0870  │  [ Order{id=77, qty=8834} ]
+```
+
+### SPOT Matching Flow
+
+```
+processNewOrder(SPOT_BUY, price=1.0870, qty=500)
+        │
+        ▼
+matchSpotOrders(incoming, sb, book)
+        │
+        ├── asks.begin() → price=1.0863  (1.0870 >= 1.0863 ✓ cross)
+        │     fillQty = min(500, 11045) = 500
+        │     logAndNotify(Trade{qty=500, @1.0863, ...})
+        │     incoming.qty = 0  →  ask qty reduced to 10545
+        │
+        └── incoming.qty == 0 → fully filled, do not queue
 ```
 
 ### Cancellation Flow (O(1))
@@ -125,29 +132,16 @@ EUR/USD  sellOrders
 processCancelOrder(id=1)
         │
         ▼
-getOrderCounterparty(1)          retrieve Counterparty* before erasure
+getOrderCounterparty(1)          read Counterparty* before erasure
         │
         ▼
-orderIndex.find(1)
-        │
-        ▼  O(1) hash lookup
-OrderLocation { priceMap=&buyOrders, price=1.0842, it }
+orderIndex.find(1) → OrderLocation { list*, price=1.0842, it, eraseLevel }
         │
         ▼
-buyOrders[1.0842]: [ Order{id=1} ── Order{id=26} ]
-                     list::erase(it)   ← O(1) iterator removal
-                   [ Order{id=26} ]
-
-if list empty ──► priceMap->erase(1.0842)   clean up price level
-orderIndex.erase(1)                          clean up index
-counterparty.removeOrderId(1)               update counterparty tracking
-```
-
-### Trade Execution Logic
-
-```
-Buy order:  execute if order.price >= market price
-Sell order: execute if order.price <= market price
+list::erase(it)                  O(1) — removes only this node; other iterators unaffected
+if list empty → eraseLevel(1.0842)    removes price level from BidMap or AskMap
+orderIndex.erase(1)
+counterparty->removeOrderId(1)
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full component details, data flow diagrams, and design patterns.
@@ -156,18 +150,18 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full component details, data flow dia
 
 ## Order Types
 
-| Value | Type         | Side |
-|-------|--------------|------|
-| 0     | MARKET_BUY   | Buy  |
-| 1     | MARKET_SELL  | Sell |
-| 2     | LIMIT_BUY    | Buy  |
-| 3     | LIMIT_SELL   | Sell |
-| 4     | STOP_BUY     | Buy  |
-| 5     | STOP_SELL    | Sell |
-| 6     | SPOT_BUY     | Buy  |
-| 7     | SPOT_SELL    | Sell |
-| 8     | SWAP_BUY     | Buy  |
-| 9     | SWAP_SELL    | Sell |
+| Value | Type         | Side | Matching |
+|-------|--------------|------|---------|
+| 0     | MARKET_BUY   | Buy  | queued only |
+| 1     | MARKET_SELL  | Sell | queued only |
+| 2     | LIMIT_BUY    | Buy  | queued only |
+| 3     | LIMIT_SELL   | Sell | queued only |
+| 4     | STOP_BUY     | Buy  | queued only |
+| 5     | STOP_SELL    | Sell | queued only |
+| 6     | SPOT_BUY     | Buy  | **matched + queued** |
+| 7     | SPOT_SELL    | Sell | **matched + queued** |
+| 8     | SWAP_BUY     | Buy  | queued only |
+| 9     | SWAP_SELL    | Sell | queued only |
 
 Even values = Buy, Odd values = Sell.
 
@@ -192,75 +186,88 @@ Any combination of: EUR, GBP, USD, JPY, CHF, AUD, CAD, NZD, SGD, HKD, CNY, MXN, 
 
 ## Build & Run
 
-**Build:**
+**Build main binary:**
 ```bash
 g++ -fdiagnostics-color=always -g \
     Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
     MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
-    TradingSystem.cpp -o trading_system
-```
-
-Or use the included build script:
-```bash
-./build
+    TradingSystem.cpp -o TradingSystem
 ```
 
 **Run:**
 ```bash
-./trading_system
+./TradingSystem
 ```
 
-**Expected output:**
+**Expected output (excerpt):**
 ```
 Processed order #1: BUY 9847 EUR/USD @ 1.0842  [Goldman Sachs]
+[TRADE] EUR/USD  qty=500  @ 1.0842  | Buy#3 (Deutsche Bank)  Sell#1 (Goldman Sachs)
 Processed order #2: SELL 10523 GBP/USD @ 1.2634  [JP Morgan]
 ...
 Total orders processed: 100
+
+================================================================
+                         ORDER BOOK
+================================================================
+
+  EUR/USD
+  SELL (Ask)
+      1.0849      9,912    [#76]  <- best ask
+      1.0856     10,123    [#26]
+  ................................................................
+  BUY  (Bid)
+      1.0842      9,847    [#1]   <- best bid
+      1.0835     10,789    [#51]
+  ================================================================
 ```
 
 ---
 
 ## Testing
 
-The test suite lives in `tests.cpp` and uses a simple pass/fail framework with no external dependencies.
+The test suite lives in `tests.cpp` and uses a minimal pass/fail framework with no external dependencies.
 
 **Build and run:**
 ```bash
-./build_tests
+g++ -fdiagnostics-color=always -g \
+    Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
+    MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
+    tests.cpp -o run_tests
+
 ./run_tests
 ```
 
-**Test sections (53 tests total):**
+**Test sections (109 tests total):**
 
-| Section | What is verified |
-|---------|-----------------|
-| Order Routing | All 10 order types route to the correct side — MARKET/LIMIT/STOP/SPOT/SWAP × Buy/Sell |
-| Buy-Side Price Priority | `rbegin()` returns best bid (highest price); `begin()` returns lowest buy level |
-| Sell-Side Price Priority | `begin()` returns best ask (lowest price); `rbegin()` returns highest sell level |
-| Time Priority (FIFO) | Orders at the same price level maintain strict insertion order |
-| Order Cancellation | Price level removed when last order cancelled; preserved on partial cancel; invalid ID leaves book unchanged |
-| Counterparty Tracking | Order IDs accumulate on submit; removed on cancel; two counterparties track independently; `getCounterparty()` returns correct pointer; bogus cancel leaves counterparty unchanged |
+| Section | Tests | What is verified |
+|---------|-------|-----------------|
+| Order Routing | 20 | All 10 order types route to the correct side |
+| Buy-Side Price Priority | 3 | `begin()` returns best bid (highest); `rbegin()` returns lowest |
+| Sell-Side Price Priority | 3 | `begin()` returns best ask (lowest); `rbegin()` returns highest |
+| Time Priority (FIFO) | 7 | Orders at the same price level maintain strict insertion order |
+| Order Cancellation | 7 | Price level removed on last cancel; preserved on partial cancel; invalid ID is a no-op |
+| Counterparty Tracking | 12 | IDs accumulate on submit, removed on cancel; two counterparties track independently; bogus cancel is a no-op |
+| SPOT Matching Engine | 57 | Exact match, partial buy/ask fills, buy/sell multi-level sweeps, no-match guard, sell-exact mirror; counterparty name in notifications |
 
 ---
 
 ## Current Status
 
-This is an early-stage implementation. The following are stubs or not yet implemented:
-
-- `MarketManager` — placeholder for live market data feeds
-- Trade execution — conditions are checked but orders are not actually filled
-- No order history or audit trail
-- No persistence layer
+- SPOT order matching is fully implemented with partial fills and counterparty notifications
+- `MarketManager` remains a stub (no live data feeds)
+- MARKET, LIMIT, STOP, and SWAP orders are queued but not yet matched against each other
+- No persistence layer — all state is in-memory
 - Single-threaded only
 
 ---
 
 ## Planned Features
 
-- Full trade matching engine
+- Matching engine for LIMIT, STOP, and SWAP order types
 - Real-time market data integration (WebSocket / FIX protocol)
-- Order modification
-- Trade and order history tracking
+- Order modification (price / quantity amendment)
+- Trade and order history / audit trail
 - Position and portfolio management
 - Risk management and limits
 - Database persistence
