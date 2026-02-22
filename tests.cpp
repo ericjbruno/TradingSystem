@@ -85,9 +85,9 @@ int main() {
         SubBook& sb  = om.getSubBook("EUR/USD");
         auto&    bids = sb.getBuyOrdersRef();
 
-        check("3 price levels in buy book",          bids.size() == 3);
-        check("Best bid (rbegin) is 1.0856",         bids.rbegin()->first == 1.0856);
-        check("Lowest buy level (begin) is 1.0835",  bids.begin()->first  == 1.0835);
+        check("3 price levels in buy book",           bids.size() == 3);
+        check("Best bid (begin) is 1.0856",           bids.begin()->first  == 1.0856);
+        check("Lowest buy level (rbegin) is 1.0835",  bids.rbegin()->first == 1.0835);
     }
 
     // ── 3. Sell-side price priority ───────────────────────────────────────────

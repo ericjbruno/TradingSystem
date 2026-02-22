@@ -1,3 +1,4 @@
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -19,20 +20,31 @@ OrderManager::~OrderManager() {
 
 void OrderManager::processNewOrder(const Order& newOrder) {
     // Get the order book for this symbol
-    SubBook& sb = orderBook->get( newOrder.getSymbol() );
+    SubBook& sb = orderBook->get(newOrder.getSymbol());
 
-    // Select buy or sell price-level map and insert at the order's price
-    // map maintains sorted order automatically: O(log n)
-    PriceLevelMap& orders = newOrder.isBuyOrder()
-        ? sb.getBuyOrdersRef()
-        : sb.getSellOrdersRef();
+    // Insert into the correct map (BidMap or AskMap) and capture a type-erased
+    // erase function so OrderLocation works with both map types.
+    std::list<Order>*           priceListPtr;
+    std::function<void(double)> eraseLevel;
 
-    auto& priceLevel = orders[newOrder.getPrice()];
-    priceLevel.push_back(newOrder);
+    if (newOrder.isBuyOrder()) {
+        BidMap* bids = &sb.getBuyOrdersRef();
+        auto&   pl   = (*bids)[newOrder.getPrice()];
+        pl.push_back(newOrder);
+        priceListPtr = &pl;
+        eraseLevel   = [bids](double p) { bids->erase(p); };
+    } else {
+        AskMap* asks = &sb.getSellOrdersRef();
+        auto&   pl   = (*asks)[newOrder.getPrice()];
+        pl.push_back(newOrder);
+        priceListPtr = &pl;
+        eraseLevel   = [asks](double p) { asks->erase(p); };
+    }
 
     // Index the order for O(1) cancellation
-    auto it = std::prev(priceLevel.end());
-    orderBook->indexOrder(newOrder.getId(), {&orders, newOrder.getPrice(), it});
+    auto it = std::prev(priceListPtr->end());
+    orderBook->indexOrder(newOrder.getId(),
+                          {priceListPtr, newOrder.getPrice(), it, eraseLevel});
 
     // Register order with its counterparty
     if (Counterparty* cp = newOrder.getCounterparty())

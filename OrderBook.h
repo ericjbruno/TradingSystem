@@ -1,3 +1,4 @@
+#include <functional>
 #include <list>
 #include <string>
 #include <unordered_map>
@@ -10,11 +11,13 @@
 
 class Counterparty;  // forward declaration
 
-// Locates a specific order within a price-level map for O(1) cancellation
+// Locates a specific order within a price-level list for O(1) cancellation.
+// Uses a type-erased erase function so it works with both BidMap and AskMap.
 struct OrderLocation {
-    PriceLevelMap* priceMap;           // pointer to buy or sell map in SubBook
-    double price;                       // price level key in the map
-    std::list<Order>::iterator it;      // iterator to this order in the list
+    std::list<Order>*           priceList;   // pointer to the list at this price level
+    double                      price;       // price level key in the map
+    std::list<Order>::iterator  it;          // iterator to this order in the list
+    std::function<void(double)> eraseLevel;  // removes the price level from its map
 };
 
 /**

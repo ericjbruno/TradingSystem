@@ -85,8 +85,8 @@ void printOrderBook(OrderManager& om) {
         if (bids.empty()) {
             std::cout << "    (none)\n";
         } else {
-            for (auto it = bids.rbegin(); it != bids.rend(); ++it) {
-                bool isBest = (it == bids.rbegin());
+            for (auto it = bids.begin(); it != bids.end(); ++it) {
+                bool isBest = (it == bids.begin());
                 long total  = 0;
                 for (const auto& o : it->second) total += o.getQuantity();
 

@@ -72,12 +72,11 @@ bool OrderBook::cancel(long orderId) {
     OrderLocation& loc = indexIt->second;
 
     // Remove the order from its price-level list: O(1)
-    auto& priceLevel = (*loc.priceMap)[loc.price];
-    priceLevel.erase(loc.it);
+    loc.priceList->erase(loc.it);
 
     // Clean up the price level if it's now empty
-    if (priceLevel.empty()) {
-        loc.priceMap->erase(loc.price);
+    if (loc.priceList->empty()) {
+        loc.eraseLevel(loc.price);
     }
 
     orderIndex.erase(indexIt);
