@@ -14,6 +14,12 @@ const std::string& Counterparty::getName() const { return name; }
 
 const std::vector<long>& Counterparty::getOrderIds() const { return orderIds; }
 
+const std::vector<TradeNotification>& Counterparty::getTrades() const { return trades; }
+
+void Counterparty::onTrade(TradeNotification notification) {
+    trades.push_back(std::move(notification));
+}
+
 void Counterparty::addOrderId(long orderId) {
     orderIds.push_back(orderId);
 }

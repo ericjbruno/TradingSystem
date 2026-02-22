@@ -74,5 +74,10 @@ public:
 
     // Returns a list of all symbols currently in the order book
     std::vector<std::string> getSymbols() const;
+
+    // Remove an order from the index only — does NOT touch the price-level list or map.
+    // Use this when the matching engine has already erased the order from the list
+    // itself and just needs the index entry cleaned up.
+    void removeFromIndex(long orderId);
 };
 #endif

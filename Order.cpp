@@ -49,6 +49,10 @@ void Order::setActive(bool active) {
     this->active = active;
 }
 
+void Order::setQuantity(long qty) {
+    this->quantity = qty;
+}
+
 bool Order::isLimitOrder() const {
     return type == OrderType::MARKET_BUY || type == OrderType::MARKET_SELL;
 }

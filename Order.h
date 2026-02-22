@@ -34,6 +34,7 @@ public:
     OrderType getType() const;
     long getQuantity() const;
     void setActive(bool active);
+    void setQuantity(long qty);
     bool isLimitOrder() const;
     bool isActive() const;
     bool isBuyOrder() const;

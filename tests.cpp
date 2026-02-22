@@ -198,9 +198,9 @@ int main() {
     {
         Counterparty trader("Trader A");
 
-        Order x("SGD/USD", 0.7400, 500,  OrderType::SPOT_BUY,  &trader);
-        Order y("SGD/USD", 0.7400, 1000, OrderType::SPOT_SELL, &trader);
-        Order z("SGD/USD", 0.7410, 750,  OrderType::SPOT_BUY,  &trader);
+        Order x("SGD/USD", 0.7400, 500,  OrderType::SWAP_BUY,  &trader);
+        Order y("SGD/USD", 0.7400, 1000, OrderType::SWAP_SELL, &trader);
+        Order z("SGD/USD", 0.7410, 750,  OrderType::SWAP_BUY,  &trader);
         long idX = x.getId(), idY = y.getId(), idZ = z.getId();
 
         om.processNewOrder(x);
@@ -220,9 +220,9 @@ int main() {
         Counterparty alpha("Alpha Fund");
         Counterparty beta("Beta Fund");
 
-        Order a("HKD/USD", 0.1280, 200, OrderType::SPOT_BUY,  &alpha);
-        Order b("HKD/USD", 0.1280, 300, OrderType::SPOT_SELL, &beta);
-        Order c("HKD/USD", 0.1285, 400, OrderType::SPOT_BUY,  &alpha);
+        Order a("HKD/USD", 0.1280, 200, OrderType::SWAP_BUY,  &alpha);
+        Order b("HKD/USD", 0.1280, 300, OrderType::SWAP_SELL, &beta);
+        Order c("HKD/USD", 0.1285, 400, OrderType::SWAP_BUY,  &alpha);
 
         om.processNewOrder(a);
         om.processNewOrder(b);
@@ -262,6 +262,160 @@ int main() {
 
         om.processCancelOrder(888888);   // bogus ID
         check("Counterparty unchanged",       desk.getOrderIds().size() == 1);
+    }
+
+    // ── 7. SPOT Matching Engine ───────────────────────────────────────────────
+    section("SPOT Matching Engine");
+
+    // Use symbols prefixed with "MATCH/" to avoid interference from prior tests
+
+    // 7a. Exact match — standing bid fully consumed by incoming ask
+    {
+        Counterparty buyer("Buyer.A"), seller("Seller.A");
+        Order bid("MATCH/EXACT", 1.1000, 100, OrderType::SPOT_BUY,  &buyer);
+        Order ask("MATCH/EXACT", 1.1000, 100, OrderType::SPOT_SELL, &seller);
+        long bidId = bid.getId();
+
+        om.processNewOrder(bid);   // queued; buyer now tracks bidId
+        om.processNewOrder(ask);   // matches bid; both fully consumed
+
+        SubBook& sb = om.getSubBook("MATCH/EXACT");
+        check("Exact: buy side empty",           sb.getBuyOrdersRef().empty());
+        check("Exact: sell side empty",          sb.getSellOrdersRef().empty());
+        check("Exact: buyer notified (1 trade)", buyer.getTrades().size()  == 1);
+        check("Exact: seller notified (1 trade)",seller.getTrades().size() == 1);
+        check("Exact: trade qty is 100",         buyer.getTrades()[0].quantity == 100);
+        check("Exact: buyer sees wasBuy=true",   buyer.getTrades()[0].wasBuy  == true);
+        check("Exact: seller sees wasBuy=false", seller.getTrades()[0].wasBuy == false);
+        check("Exact: buyer's orderId removed",  buyer.getOrderIds().empty());
+        check("Exact: seller never queued",      seller.getOrderIds().empty());
+        check("Exact: seller's counterparty name seen by buyer",
+              buyer.getTrades()[0].counterpartyName == "Seller.A");
+    }
+
+    // 7b. Incoming buy larger than standing ask — ask consumed, buy remainder queued
+    {
+        Counterparty buyer("Buyer.B"), seller("Seller.B");
+        Order ask("MATCH/BUY.PARTIAL", 1.2500, 200, OrderType::SPOT_SELL, &seller);
+        Order bid("MATCH/BUY.PARTIAL", 1.2500, 500, OrderType::SPOT_BUY,  &buyer);
+
+        om.processNewOrder(ask);  // queued (200 qty)
+        om.processNewOrder(bid);  // matches 200; 300 remainder queued
+
+        SubBook& sb = om.getSubBook("MATCH/BUY.PARTIAL");
+        check("Buy partial: ask side empty",         sb.getSellOrdersRef().empty());
+        check("Buy partial: buy side has remainder", !sb.getBuyOrdersRef().empty());
+        check("Buy partial: remaining buy qty=300",
+              sb.getBuyOrdersRef().begin()->second.front().getQuantity() == 300);
+        check("Buy partial: buyer notified",         buyer.getTrades().size()  == 1);
+        check("Buy partial: seller notified",        seller.getTrades().size() == 1);
+        check("Buy partial: trade qty is 200",       buyer.getTrades()[0].quantity == 200);
+        check("Buy partial: buyer tracks remainder", buyer.getOrderIds().size() == 1);
+        check("Buy partial: seller orderId removed", seller.getOrderIds().empty());
+    }
+
+    // 7c. Incoming buy smaller than standing ask — buy fully consumed, ask reduced
+    {
+        Counterparty buyer("Buyer.C"), seller("Seller.C");
+        Order ask("MATCH/ASK.PARTIAL", 1.3600, 500, OrderType::SPOT_SELL, &seller);
+        Order bid("MATCH/ASK.PARTIAL", 1.3600, 200, OrderType::SPOT_BUY,  &buyer);
+
+        om.processNewOrder(ask);  // queued (500 qty)
+        om.processNewOrder(bid);  // matches 200; ask reduced to 300
+
+        SubBook& sb = om.getSubBook("MATCH/ASK.PARTIAL");
+        check("Ask partial: buy side empty",     sb.getBuyOrdersRef().empty());
+        check("Ask partial: ask still in book",  !sb.getSellOrdersRef().empty());
+        check("Ask partial: ask qty reduced to 300",
+              sb.getSellOrdersRef().begin()->second.front().getQuantity() == 300);
+        check("Ask partial: buyer notified",     buyer.getTrades().size()  == 1);
+        check("Ask partial: seller notified",    seller.getTrades().size() == 1);
+        check("Ask partial: trade qty is 200",   buyer.getTrades()[0].quantity == 200);
+        check("Ask partial: buyer not queued",   buyer.getOrderIds().empty());
+        check("Ask partial: seller still queued",seller.getOrderIds().size() == 1);
+    }
+
+    // 7d. Multi-level sweep — incoming buy sweeps two ask price levels
+    {
+        Counterparty buyer("Buyer.D"), sellerLo("Seller.DLo"), sellerHi("Seller.DHi");
+        Order askLo("MATCH/BUY.SWEEP", 1.0700, 300, OrderType::SPOT_SELL, &sellerLo);
+        Order askHi("MATCH/BUY.SWEEP", 1.0720, 300, OrderType::SPOT_SELL, &sellerHi);
+        Order bid  ("MATCH/BUY.SWEEP", 1.0750, 600, OrderType::SPOT_BUY,  &buyer);
+
+        om.processNewOrder(askLo);
+        om.processNewOrder(askHi);
+        om.processNewOrder(bid);   // sweeps both levels
+
+        SubBook& sb = om.getSubBook("MATCH/BUY.SWEEP");
+        check("Sweep: buy fully filled",        sb.getBuyOrdersRef().empty());
+        check("Sweep: sell side empty",         sb.getSellOrdersRef().empty());
+        check("Sweep: buyer got 2 trade fills", buyer.getTrades().size()   == 2);
+        check("Sweep: low seller notified",     sellerLo.getTrades().size() == 1);
+        check("Sweep: high seller notified",    sellerHi.getTrades().size() == 1);
+        check("Sweep: first fill at 1.0700",    buyer.getTrades()[0].price == 1.0700);
+        check("Sweep: second fill at 1.0720",   buyer.getTrades()[1].price == 1.0720);
+    }
+
+    // 7e. Multi-level sweep — incoming sell sweeps two bid price levels
+    {
+        Counterparty seller("Seller.E"), buyerHi("Buyer.EHi"), buyerLo("Buyer.ELo");
+        Order bidHi("MATCH/SELL.SWEEP", 1.0850, 200, OrderType::SPOT_BUY,  &buyerHi);
+        Order bidLo("MATCH/SELL.SWEEP", 1.0830, 200, OrderType::SPOT_BUY,  &buyerLo);
+        Order ask  ("MATCH/SELL.SWEEP", 1.0820, 400, OrderType::SPOT_SELL, &seller);
+
+        om.processNewOrder(bidHi);
+        om.processNewOrder(bidLo);
+        om.processNewOrder(ask);   // sweeps both bid levels
+
+        SubBook& sb = om.getSubBook("MATCH/SELL.SWEEP");
+        check("Sell sweep: sell fully filled",       sb.getSellOrdersRef().empty());
+        check("Sell sweep: buy side empty",          sb.getBuyOrdersRef().empty());
+        check("Sell sweep: seller got 2 fills",      seller.getTrades().size()  == 2);
+        check("Sell sweep: high buyer notified",     buyerHi.getTrades().size() == 1);
+        check("Sell sweep: low buyer notified",      buyerLo.getTrades().size() == 1);
+        check("Sell sweep: first fill at 1.0850",   seller.getTrades()[0].price == 1.0850);
+        check("Sell sweep: second fill at 1.0830",  seller.getTrades()[1].price == 1.0830);
+    }
+
+    // 7f. No match — bid price below best ask
+    {
+        Counterparty buyer("Buyer.F"), seller("Seller.F");
+        Order ask("MATCH/NOMATCH", 1.0600, 100, OrderType::SPOT_SELL, &seller);
+        Order bid("MATCH/NOMATCH", 1.0550, 100, OrderType::SPOT_BUY,  &buyer);
+
+        om.processNewOrder(ask);   // queued
+        om.processNewOrder(bid);   // bid (1.0550) < ask (1.0600) — no trade
+
+        SubBook& sb = om.getSubBook("MATCH/NOMATCH");
+        check("No match: bid in book",             !sb.getBuyOrdersRef().empty());
+        check("No match: ask in book",             !sb.getSellOrdersRef().empty());
+        check("No match: buyer not notified",      buyer.getTrades().empty());
+        check("No match: seller not notified",     seller.getTrades().empty());
+        check("No match: buyer tracks its order",  buyer.getOrderIds().size()  == 1);
+        check("No match: seller tracks its order", seller.getOrderIds().size() == 1);
+    }
+
+    // 7g. Incoming sell matches standing bid exactly (mirror of 7a)
+    {
+        Counterparty buyer("Buyer.G"), seller("Seller.G");
+        Order bid("MATCH/SELL.EXACT", 17.2500, 400, OrderType::SPOT_BUY,  &buyer);
+        Order ask("MATCH/SELL.EXACT", 17.2500, 400, OrderType::SPOT_SELL, &seller);
+
+        om.processNewOrder(bid);   // queued
+        om.processNewOrder(ask);   // matches bid exactly
+
+        SubBook& sb = om.getSubBook("MATCH/SELL.EXACT");
+        check("Sell exact: buy side empty",           sb.getBuyOrdersRef().empty());
+        check("Sell exact: sell side empty",          sb.getSellOrdersRef().empty());
+        check("Sell exact: buyer notified",           buyer.getTrades().size()  == 1);
+        check("Sell exact: seller notified",          seller.getTrades().size() == 1);
+        check("Sell exact: trade qty is 400",         buyer.getTrades()[0].quantity == 400);
+        check("Sell exact: buyer sees wasBuy=true",   buyer.getTrades()[0].wasBuy  == true);
+        check("Sell exact: seller sees wasBuy=false", seller.getTrades()[0].wasBuy == false);
+        check("Sell exact: buyer's orderId removed",  buyer.getOrderIds().empty());
+        check("Sell exact: seller never queued",      seller.getOrderIds().empty());
+        check("Sell exact: buyer's counterparty name seen by seller",
+              seller.getTrades()[0].counterpartyName == "Buyer.G");
     }
 
     // ── Summary ───────────────────────────────────────────────────────────────

@@ -63,6 +63,10 @@ std::vector<std::string> OrderBook::getSymbols() const {
     return result;
 }
 
+void OrderBook::removeFromIndex(long orderId) {
+    orderIndex.erase(orderId);
+}
+
 bool OrderBook::cancel(long orderId) {
     auto indexIt = orderIndex.find(orderId);
     if (indexIt == orderIndex.end()) {
