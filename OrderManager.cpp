@@ -19,34 +19,56 @@ OrderManager::~OrderManager() {
 }
 
 void OrderManager::processNewOrder(const Order& newOrder) {
-    // Get the order book for this symbol
+    // Get (or lazily create) the SubBook for this trading symbol
     SubBook& sb = orderBook->get(newOrder.getSymbol());
 
-    // Insert into the correct map (BidMap or AskMap) and capture a type-erased
-    // erase function so OrderLocation works with both map types.
+    // BidMap (buys) and AskMap (sells) are different C++ types — BidMap uses
+    // std::greater so begin() always gives the best bid (highest price), while
+    // AskMap uses default ascending so begin() gives the best ask (lowest price).
+    //
+    // Because the two map types differ, OrderLocation cannot store a raw map
+    // pointer that covers both.  Instead we store two type-erased values:
+    //   priceListPtr — points to the std::list<Order> at this price level
+    //   eraseLevel   — a lambda that removes that price level from its map
+    //
+    // The lambda captures the map pointer by value at insert time, so cancel()
+    // can call eraseLevel(price) later without knowing which map type it owns.
     std::list<Order>*           priceListPtr;
     std::function<void(double)> eraseLevel;
 
     if (newOrder.isBuyOrder()) {
         BidMap* bids = &sb.getBuyOrdersRef();
-        auto&   pl   = (*bids)[newOrder.getPrice()];
+
+        // operator[] returns the existing list if this price level already has
+        // orders, or inserts a new empty list if it doesn't — either way pl is
+        // a reference to the list where this order belongs.
+        auto& pl = (*bids)[newOrder.getPrice()];
+
+        // Multiple orders at the same price all share the same list, held in
+        // arrival (FIFO) order.
         pl.push_back(newOrder);
         priceListPtr = &pl;
-        eraseLevel   = [bids](double p) { bids->erase(p); };
+        
+        // Capture bids by value (pointer copy) so the lambda stays valid after
+        // this function returns
+        eraseLevel   = [bids](double price) { bids->erase(price); };
     } else {
         AskMap* asks = &sb.getSellOrdersRef();
-        auto&   pl   = (*asks)[newOrder.getPrice()];
+        auto& pl = (*asks)[newOrder.getPrice()];
         pl.push_back(newOrder);
         priceListPtr = &pl;
-        eraseLevel   = [asks](double p) { asks->erase(p); };
+        eraseLevel   = [asks](double price) { asks->erase(price); };
     }
 
-    // Index the order for O(1) cancellation
+    // Store an iterator to the newly inserted order (the last element in the
+    // list).  std::list iterators are stable — cancelling a different order at
+    // the same price level never invalidates this iterator, so each order in
+    // the list can be erased independently in O(1) without affecting others.
     auto it = std::prev(priceListPtr->end());
     orderBook->indexOrder(newOrder.getId(),
                           {priceListPtr, newOrder.getPrice(), it, eraseLevel});
 
-    // Register order with its counterparty
+    // Notify the counterparty that it now owns this order ID
     if (Counterparty* cp = newOrder.getCounterparty())
         cp->addOrderId(newOrder.getId());
 }

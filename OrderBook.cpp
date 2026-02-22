@@ -69,14 +69,20 @@ bool OrderBook::cancel(long orderId) {
         return false;
     }
 
-    OrderLocation& loc = indexIt->second;
+    OrderLocation& location = indexIt->second;
 
-    // Remove the order from its price-level list: O(1)
-    loc.priceList->erase(loc.it);
+    // Erase just this order from its price-level list using its stored iterator.
+    // Because the list may contain other orders at the same price, we remove
+    // only the targeted node — O(1) and does not invalidate any other iterator
+    // in the list, so concurrent OrderLocations at the same price remain valid.
+    location.priceList->erase(location.it);
 
-    // Clean up the price level if it's now empty
-    if (loc.priceList->empty()) {
-        loc.eraseLevel(loc.price);
+    // If this was the last order at this price level, remove the price level
+    // entry from the map entirely so the book stays clean.
+    // eraseLevel is a lambda that was captured at insert time and knows which
+    // map (BidMap or AskMap) owns this price level.
+    if (location.priceList->empty()) {
+        location.eraseLevel(location.price);
     }
 
     orderIndex.erase(indexIt);
