@@ -35,9 +35,8 @@ static std::string buildIds(const std::list<Order>& orders) {
 }
 
 // Print a complete ASCII snapshot of every symbol in the order book.
-// Sell (ask) side is shown above the spread line, highest price first so the
-// best ask sits closest to the spread.  Buy (bid) side is shown below with
-// the best bid at the top — also closest to the spread.
+// Sell (ask) side: lowest price (best ask) first, descending toward the spread.
+// Buy (bid) side: highest price (best bid) first, ascending toward the spread.
 void printOrderBook(OrderManager& om) {
     const int         W   = 64;
     const std::string SEP = std::string(W, '=');
@@ -59,13 +58,13 @@ void printOrderBook(OrderManager& om) {
 
         std::cout << "\n  " << sym << "\n";
 
-        // ── Sell (ask) side: highest price first, best ask at bottom ────────
+        // ── Sell (ask) side: lowest price first (best ask at top) ──────────
         std::cout << "  SELL (Ask)\n";
         if (asks.empty()) {
             std::cout << "    (none)\n";
         } else {
-            for (auto it = asks.rbegin(); it != asks.rend(); ++it) {
-                bool isBest = (std::next(it) == asks.rend());
+            for (auto it = asks.begin(); it != asks.end(); ++it) {
+                bool isBest = (it == asks.begin());
                 long total  = 0;
                 for (const auto& o : it->second) total += o.getQuantity();
 
