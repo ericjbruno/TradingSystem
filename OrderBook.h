@@ -79,5 +79,9 @@ public:
     // Use this when the matching engine has already erased the order from the list
     // itself and just needs the index entry cleaned up.
     void removeFromIndex(long orderId);
+
+    // Returns the trading symbol for a given order ID, or "" if not found.
+    // Safe to call before cancel() — reads from the order's list node.
+    std::string getOrderSymbol(long orderId) const;
 };
 #endif

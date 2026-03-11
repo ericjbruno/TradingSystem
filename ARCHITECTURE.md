@@ -9,13 +9,15 @@ TradingSystem is a C++ forex trading system that processes orders, maintains a l
 ```
 TradingSystem/
 ├── Source Files
-│   ├── TradingSystem.cpp    # Main entry point — CSV parser, order factory, book display
+│   ├── TradingSystem.cpp    # Main entry point — CSV parser, order factory, book display, HTTP server startup
 │   ├── Counterparty.cpp     # Counterparty identity, order tracking, trade notifications
 │   ├── Order.cpp            # Order implementation
-│   ├── OrderManager.cpp     # Order processing — matching, queuing, cancellation
+│   ├── OrderManager.cpp     # Order processing — matching, queuing, cancellation, book-update events
 │   ├── OrderBook.cpp        # Order book storage and cancellation index
 │   ├── SubBook.cpp          # Buy/sell order containers (BidMap + AskMap)
-│   ├── TradeManager.cpp     # Matching engine, price logic, fill logging
+│   ├── TradeManager.cpp     # Matching engine, price logic, fill logging, trade SSE events
+│   ├── EventBus.cpp         # Thread-safe pub/sub for SSE streaming
+│   ├── HTTPServer.cpp       # REST API + SSE /events endpoint (cpp-httplib)
 │   ├── MarketPrice.cpp      # Market price data
 │   └── MarketManager.cpp    # Market data management (stub)
 │
@@ -27,8 +29,32 @@ TradingSystem/
 │   ├── OrderBook.h          # OrderLocation struct + OrderBook class
 │   ├── SubBook.h            # BidMap and AskMap type aliases
 │   ├── TradeManager.h       # Trade struct + TradeManager class
+│   ├── EventBus.h           # EventBus::Connection + publish/subscribe interface
+│   ├── HTTPServer.h         # HTTPServer class declaration
+│   ├── httplib.h            # cpp-httplib single-header HTTP library (third-party)
 │   ├── MarketPrice.h
 │   └── MarketManager.h
+│
+├── React UI
+│   └── ui/
+│       ├── package.json
+│       ├── vite.config.js
+│       ├── index.html
+│       └── src/
+│           ├── main.jsx
+│           ├── App.jsx              # Bootstrap, SSE setup, layout
+│           ├── index.css            # Dark terminal theme
+│           ├── store/
+│           │   └── tradingStore.js  # Zustand state (books, trades, symbols)
+│           └── components/
+│               ├── SymbolSelector.jsx
+│               ├── OrderBook.jsx    # Bid/ask price ladder
+│               ├── TradeFeed.jsx    # Scrolling fill log
+│               └── OrderForm.jsx    # Order submit + cancel form
+│
+├── Scripts
+│   ├── run_server.sh        # Build C++ binary and start HTTP server
+│   └── run_ui.sh            # Install npm deps (if needed) and start Vite dev server
 │
 ├── Data Files
 │   └── forex_orders.csv     # 100 sample forex orders; 24 result in trades (24%)
@@ -42,17 +68,17 @@ TradingSystem/
 ## Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      PRESENTATION LAYER                      │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │  TradingSystem.cpp (main)                             │  │
-│  │  - CSV Parser                                         │  │
-│  │  - Order Factory                                      │  │
-│  │  - printOrderBook() ASCII display                     │  │
-│  └───────────────────────────────────────────────────────┘  │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-                             ▼
+┌──────────────────────────┐    ┌──────────────────────────────┐
+│   PRESENTATION LAYER     │    │       UI LAYER (React)        │
+│  TradingSystem.cpp       │    │  ui/src/App.jsx               │
+│  - CSV Parser            │    │  - EventSource /events        │
+│  - Order Factory         │    │  - Zustand store              │
+│  - printOrderBook()      │    │  - OrderBook ladder           │
+│  - HTTPServer startup    │    │  - TradeFeed                  │
+└──────────────┬───────────┘    │  - OrderForm (POST/DELETE)    │
+               │                └──────────────────────────────┘
+               │                          ▲  SSE / REST
+               ▼                          │
 ┌─────────────────────────────────────────────────────────────┐
 │                    BUSINESS LOGIC LAYER                      │
 │  ┌─────────────────────┐    ┌─────────────────────────┐     │
@@ -60,15 +86,26 @@ TradingSystem/
 │  │  - processNewOrder  │◄──►│  - Market data feeds    │     │
 │  │  - processCancelOrder    │  - Price management     │     │
 │  │  - queueOrder       │    │                         │     │
-│  └──────────┬──────────┘    └─────────────────────────┘     │
+│  │  - publishBookUpdate│    └─────────────────────────┘     │
+│  └──────────┬──────────┘                                    │
 │             │                                               │
 │             ▼                                               │
-│  ┌─────────────────────┐                                    │
-│  │    TradeManager     │                                    │
-│  │  - matchSpotOrders  │  ← matching engine lives here      │
-│  │  - logAndNotify     │                                    │
-│  │  - pricesMatch      │                                    │
-│  └─────────────────────┘                                    │
+│  ┌─────────────────────┐    ┌─────────────────────────┐     │
+│  │    TradeManager     │    │      HTTPServer         │     │
+│  │  - matchSpotOrders  │    │  - GET  /symbols        │     │
+│  │  - logAndNotify     │    │  - GET  /books          │     │
+│  │  - pricesMatch      │    │  - GET  /book/:symbol   │     │
+│  │  - recentTrades_    │    │  - GET  /trades         │     │
+│  └─────────────────────┘    │  - POST /orders         │     │
+│             │               │  - DELETE /orders/:id   │     │
+│             └──────────────►│  - GET  /events (SSE)   │     │
+│                  EventBus   └─────────────────────────┘     │
+│          ┌──────────────────────────────────────────┐       │
+│          │  EventBus                                │       │
+│          │  - publish(sseMsg)                       │       │
+│          │  - subscribe() / unsubscribe()           │       │
+│          │  - per-connection queue + condvar        │       │
+│          └──────────────────────────────────────────┘       │
 └─────────────────────────────────────────────────────────────┘
                              │
                              ▼
@@ -234,7 +271,7 @@ struct OrderLocation {
 
 ### 6. TradeManager
 
-**Purpose:** Contains all trade matching logic — price crossing check, matching engine execution, fill logging, and counterparty notification.
+**Purpose:** Contains all trade matching logic — price crossing check, matching engine execution, fill logging, counterparty notification, and SSE event publishing.
 
 **Trade struct:**
 ```cpp
@@ -251,24 +288,76 @@ struct Trade {
 
 **Key Methods:**
 - `matchSpotOrders(Order& incoming, SubBook& sb, OrderBook& book)` — the matching engine (see Matching Engine section below)
-- `logAndNotify(const Trade&)` — logs fill to stdout and calls `onTrade()` on both counterparties
+- `logAndNotify(const Trade&)` — logs fill to stdout, stores in `recentTrades_`, publishes `event: trade` SSE message, calls `onTrade()` on both counterparties
 - `pricesMatch(bid, ask)` — returns `bid >= ask`; used as the crossing condition
+- `setEventBus(EventBus*)` — injects the event bus (called by `OrderManager::setEventBus`)
+- `getRecentTrades()` — returns the 100-entry ring buffer of recent fills
 
 ### 7. OrderManager
 
-**Purpose:** Orchestrates order lifecycle — matching, queuing, and cancellation.
+**Purpose:** Orchestrates order lifecycle — matching, queuing, cancellation, and book-update event publishing.
 
 **Attributes:**
 - `orderBook` (`std::unique_ptr<OrderBook>`) — owned order storage
 - `tradeManager` (`std::unique_ptr<TradeManager>`) — owned matching engine
 - `marketManager` (`MarketManager*`) — non-owning pointer to market data
+- `eventBus_` (`EventBus*`) — non-owning pointer; set after construction
 
 **Key Methods:**
-- `processNewOrder(Order)` — for SPOT orders: runs matching first, then queues any unfilled remainder; for all other types: queues directly
-- `processCancelOrder(orderId)` — cancels existing order via O(1) index lookup
+- `processNewOrder(Order)` — for SPOT orders: runs matching first, then queues any unfilled remainder; publishes `book_update` after; for all other types: queues then publishes
+- `processCancelOrder(orderId)` — cancels existing order via O(1) index lookup, publishes `book_update`
+- `setEventBus(EventBus*)` — wires EventBus into both OrderManager and TradeManager
+- `getRecentTrades()` — delegates to TradeManager's ring buffer
 - `queueOrder(Order, SubBook&)` — private helper; inserts into bid/ask map, indexes for cancellation, notifies counterparty
+- `publishBookUpdate(symbol)` — private helper; serialises the current SubBook to JSON and publishes `event: book_update` via the EventBus
 
-### 8. MarketManager / MarketPrice
+### 8. EventBus
+
+**Purpose:** Thread-safe publish/subscribe bus that decouples the matching engine from connected SSE clients.
+
+**Design:** Each SSE connection calls `subscribe()` to receive a `shared_ptr<Connection>`. Each `Connection` owns a `std::queue<std::string>`, a `std::mutex`, and a `std::condition_variable`. The SSE handler thread blocks on the condvar waiting for events; `publish()` pushes to every live connection's queue and wakes their threads.
+
+```
+logAndNotify() / publishBookUpdate()
+       │
+       ▼
+EventBus::publish(sseMsg)          ← acquires bus mutex
+       │
+       ├── conn[0].queue.push(msg) ← acquires conn[0] mutex, notify_one
+       ├── conn[1].queue.push(msg) ← acquires conn[1] mutex, notify_one
+       └── ...
+             │
+             ▼ (SSE handler thread wakes)
+       sink.write(msg)             ← flushes chunk to browser
+```
+
+**Key Methods:**
+- `subscribe()` — creates and registers a new `Connection`; returns `shared_ptr<Connection>`
+- `unsubscribe(conn)` — marks connection closed, wakes its thread, removes from list
+- `publish(sseMsg)` — pushes message to all live connection queues
+
+### 9. HTTPServer
+
+**Purpose:** Exposes the order book and matching engine over HTTP for the React UI. REST endpoints handle order submission and cancellation; the SSE endpoint streams real-time events.
+
+**Thread safety:** All `OrderManager` access is serialised through a single `std::mutex mu_`. The SSE handler holds its `Connection` queue lock only while draining the queue — it does **not** hold `mu_` while blocking on the condvar, so SSE connections never stall incoming REST requests.
+
+**REST API:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/symbols` | Sorted list of all symbols with active orders |
+| GET | `/book/:symbol` | Full bid/ask snapshot for one symbol |
+| GET | `/books` | Snapshots for every symbol (used on initial UI load) |
+| GET | `/trades` | Recent fills (up to 100, oldest-first) |
+| GET | `/counterparties` | Available counterparty names for order submission |
+| POST | `/orders` | Submit a new SPOT order; body: `{symbol, price, quantity, side, counterparty}` |
+| DELETE | `/orders/:id` | Cancel an order by ID |
+| GET | `/events` | SSE stream; emits `trade` and `book_update` events |
+
+All responses include `Access-Control-Allow-Origin: *` for cross-origin dev access.
+
+### 10. MarketManager / MarketPrice
 
 **Purpose:** Manages market data and pricing information.
 
@@ -327,7 +416,7 @@ Trades execute at the **standing order's price** (price-time priority). An aggre
 ### SPOT Order Processing Flow
 
 ```
-1. CSV File / API input
+1. CSV File / POST /orders
    │
    ▼
 2. Create Order object (same ID used throughout)
@@ -341,9 +430,16 @@ Trades execute at the **standing order's price** (price-time priority). An aggre
    ▼
 5. matchSpotOrders(mutableCopy, sb, *orderBook)
    │
-   ├── [prices cross] → execute fills, notify counterparties
-   │     fully filled → RETURN (do not queue)
-   │     partially filled → continue with reduced qty
+   ├── [prices cross] → execute fills
+   │     │
+   │     ├── logAndNotify(Trade)
+   │     │     ├── stdout log
+   │     │     ├── recentTrades_.push_back(trade)
+   │     │     ├── EventBus::publish("event: trade\ndata: {...}\n\n")
+   │     │     └── counterparty->onTrade(notification) × 2
+   │     │
+   │     ├── fully filled → publishBookUpdate(symbol) → RETURN
+   │     └── partially filled → continue with reduced qty
    │
    └── [no crossing price] → skip matching
    │
@@ -352,6 +448,10 @@ Trades execute at the **standing order's price** (price-time priority). An aggre
    │  a. (*BidMap/AskMap)[price].push_back(order)   O(log n)
    │  b. orderIndex[id] = OrderLocation{list*, price, iter, eraseLevel}
    │  c. counterparty->addOrderId(id)
+   │
+   ▼
+7. publishBookUpdate(symbol)
+      EventBus::publish("event: book_update\ndata: {...}\n\n")
 ```
 
 ### Non-SPOT Order Processing Flow
@@ -368,6 +468,9 @@ processNewOrder(order)
 processCancelOrder(id)
     │
     ▼
+getOrderSymbol(id)                read symbol from Order node (before erasure)
+    │
+    ▼
 getOrderCounterparty(id)          O(1) — read Counterparty* before erasure
     │
     ▼
@@ -379,6 +482,29 @@ OrderBook::cancel(id)
     │
     ▼
 counterparty->removeOrderId(id)   update counterparty tracking
+    │
+    ▼
+publishBookUpdate(symbol)         EventBus::publish("event: book_update\n…")
+```
+
+### SSE Event Flow
+
+```
+Browser (React)
+    │  GET /events  (EventSource)
+    │
+    ▼
+HTTPServer SSE handler
+    │  conn = EventBus::subscribe()
+    │  loop: conn.cv.wait_for(20s)
+    │         ├── event arrived → sink.write(msg)   flush to browser
+    │         └── timeout       → sink.write(": keepalive\n\n")
+    │
+    ╔══════════════════════════════════════╗
+    ║  Matching engine (same or other thread) ║
+    ║  logAndNotify() → EventBus::publish()   ║
+    ║  publishBookUpdate() → EventBus::publish() ║
+    ╚══════════════════════════════════════╝
 ```
 
 ---
@@ -393,6 +519,8 @@ counterparty->removeOrderId(id)   update counterparty tracking
 | Strategy | OrderType | Type-based behavior (matching vs. queuing) |
 | Observer (non-owning) | Counterparty ↔ Order | Order observes its counterparty via raw pointer |
 | Type Erasure | OrderLocation.eraseLevel | Lambda hides BidMap/AskMap type difference |
+| Publish/Subscribe | EventBus | Decouples matching engine from SSE clients |
+| Dependency Injection | setEventBus() | EventBus injected post-construction; tests run without it |
 
 ---
 
@@ -401,19 +529,24 @@ counterparty->removeOrderId(id)   update counterparty tracking
 ### Standard Library
 - `<string>` — string handling
 - `<vector>` — open order ID and trade notification lists in `Counterparty`
+- `<deque>` — ring buffer for recent trade history in `TradeManager`
 - `<list>` — order queues within each price level (stable iterators for O(1) cancel)
 - `<map>` — `BidMap` (descending) and `AskMap` (ascending) — sorted for O(1) best bid/ask
 - `<unordered_map>` — symbol lookup and cancellation index — O(1) average
 - `<functional>` — `std::function<void(double)>` for type-erased `eraseLevel` lambda
 - `<algorithm>` — `std::min` for fill quantity; `std::remove` for counterparty ID removal
 - `<atomic>` — thread-safe ID generation for `Order` and `Counterparty`
-- `<memory>` — `std::unique_ptr` ownership of `OrderBook` and `TradeManager`
+- `<memory>` — `std::unique_ptr` ownership of `OrderBook` and `TradeManager`; `shared_ptr` for SSE connections
+- `<mutex>` / `<condition_variable>` — thread safety for `EventBus` and `HTTPServer`
+- `<thread>` — unused at runtime (httplib manages its own thread pool)
 - `<iostream>` — trade logging and console output
 - `<fstream>` / `<sstream>` — CSV reading and parsing
 - `<iomanip>` — price formatting in trade log output
+- `<chrono>` — SSE keepalive timeout in `HTTPServer`
 
 ### External Dependencies
-- None — pure C++ standard library
+- **cpp-httplib** (`httplib.h`) — single-header C++ HTTP/HTTPS server and client library; MIT licence. Provides the thread-pooled HTTP server, chunked response support for SSE, and regex-based route matching. No other third-party C++ dependencies.
+- **React 18** + **Vite 5** + **Zustand 4** — React UI (`ui/` directory); managed via npm. No UI framework or CSS library — plain CSS with CSS custom properties.
 
 ---
 
@@ -425,23 +558,30 @@ counterparty->removeOrderId(id)   update counterparty tracking
 
 ### Build Commands
 
-**Main binary:**
-```bash
-g++ -fdiagnostics-color=always -g \
-    Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
-    MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
-    TradingSystem.cpp -o TradingSystem
-```
-
-**Test binary (`tests.cpp` has its own `main` and is excluded from above):**
+**Main binary (includes HTTP server):**
 ```bash
 g++ -std=c++17 -fdiagnostics-color=always -g \
     Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
     MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
+    EventBus.cpp HTTPServer.cpp TradingSystem.cpp \
+    -lpthread -o TradingSystem
+```
+
+**Test binary (`tests.cpp` has its own `main`; `HTTPServer` excluded as it is not tested here):**
+```bash
+g++ -std=c++17 -fdiagnostics-color=always -g \
+    Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
+    MarketPrice.cpp MarketManager.cpp TradeManager.cpp EventBus.cpp \
     tests.cpp -o run_tests
 
 ./run_tests                   # all sections
 ./run_tests "Cascade Fills"   # one section in isolation
+```
+
+**Convenience scripts:**
+```bash
+./run_server.sh   # builds C++ binary and starts HTTP server on :8080
+./run_ui.sh       # installs npm deps (if needed) and starts Vite dev server on :5173
 ```
 
 ---
@@ -519,17 +659,19 @@ EUR, GBP, USD, JPY, CHF, AUD, CAD, NZD, SGD, HKD, CNY, MXN, ZAR combinations
 1. **MarketManager** — stub implementation only; no live data feeds
 2. **Non-SPOT matching** — MARKET, LIMIT, STOP, and SWAP orders are queued but not matched against each other
 3. **Persistence** — no database integration; all state is in-memory
-4. **Multi-threading** — single-threaded processing (ID generation is atomic-safe; book and index access are not)
+4. **Concurrency** — `OrderManager` is protected from concurrent HTTP requests by a single coarse-grained mutex in `HTTPServer`; the matching engine itself is not independently thread-safe
+5. **Counterparty management** — CSV counterparties and HTTP-submitted-order counterparties are separate objects; no unified counterparty registry
 
 ---
 
 ## Future Development Areas
 
-- Real-time market data integration (WebSocket / FIX protocol)
 - Matching engine for LIMIT, STOP, and SWAP order types
+- Real-time market data integration (WebSocket / FIX protocol)
 - Order modification (price / quantity amendment)
 - Position and portfolio tracking
 - Fee / commission calculation
 - Risk management and limits
 - Database persistence layer
-- Multi-threaded order processing
+- Fine-grained locking or lock-free structures for higher-throughput multi-threaded processing
+- Unified counterparty registry across CSV and HTTP order sources

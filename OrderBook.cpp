@@ -67,6 +67,12 @@ void OrderBook::removeFromIndex(long orderId) {
     orderIndex.erase(orderId);
 }
 
+std::string OrderBook::getOrderSymbol(long orderId) const {
+    auto it = orderIndex.find(orderId);
+    if (it == orderIndex.end()) return "";
+    return it->second.it->getSymbol();
+}
+
 bool OrderBook::cancel(long orderId) {
     auto indexIt = orderIndex.find(orderId);
     if (indexIt == orderIndex.end()) {

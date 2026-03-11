@@ -1,18 +1,66 @@
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <sstream>
 #include "Counterparty.h"
+#include "EventBus.h"
 #include "MarketManager.h"
 #include "OrderManager.h"
 #include "OrderBook.h"
 #include "SubBook.h"
 #include "Order.h"
 
+// ── JSON helper: serialise one side of the book (bid or ask map) ──────────────
+// Works with both BidMap and AskMap via template — C++17 generic lambda.
+static auto appendPriceLevels = [](std::ostringstream& j, auto& map) {
+    bool first = true;
+    for (const auto& [price, orders] : map) {
+        if (!first) j << ",";
+        first = false;
+        long total = 0;
+        std::string ids = "[";
+        bool fst = true;
+        for (const auto& o : orders) {
+            total += o.getQuantity();
+            if (!fst) ids += ",";
+            fst = false;
+            ids += std::to_string(o.getId());
+        }
+        ids += "]";
+        j << "{\"price\":"    << price
+          << ",\"quantity\":" << total
+          << ",\"orderIds\":" << ids << "}";
+    }
+};
+
 OrderManager::OrderManager(MarketManager* marketMgr) {
     orderBook    = std::make_unique<OrderBook>();
     tradeManager = std::make_unique<TradeManager>();
     marketManager = marketMgr;
+}
+
+void OrderManager::setEventBus(EventBus* bus) {
+    eventBus_ = bus;
+    tradeManager->setEventBus(bus);
+}
+
+const std::deque<Trade>& OrderManager::getRecentTrades() const {
+    return tradeManager->getRecentTrades();
+}
+
+void OrderManager::publishBookUpdate(const std::string& symbol) {
+    if (!eventBus_) return;
+    SubBook& sb = orderBook->get(symbol);
+    std::ostringstream j;
+    j << std::fixed << std::setprecision(6);
+    j << "event: book_update\ndata: {\"symbol\":\"" << symbol << "\",\"bids\":[";
+    appendPriceLevels(j, sb.getBuyOrdersRef());
+    j << "],\"asks\":[";
+    appendPriceLevels(j, sb.getSellOrdersRef());
+    j << "]}\n\n";
+    eventBus_->publish(j.str());
 }
 
 OrderManager::~OrderManager() {
@@ -24,6 +72,7 @@ OrderManager::~OrderManager() {
 void OrderManager::processNewOrder(const Order& newOrder) {
     // Get (or lazily create) the SubBook for this trading symbol
     SubBook& sb = orderBook->get(newOrder.getSymbol());
+    const std::string sym = newOrder.getSymbol();
 
     // For SPOT orders, attempt to match against the opposite side before queuing.
     // We work with a mutable copy so the matching engine can decrement the quantity.
@@ -33,16 +82,19 @@ void OrderManager::processNewOrder(const Order& newOrder) {
         Order order = newOrder;   // mutable copy (same ID as the original)
 
         if (tradeManager->matchSpotOrders(order, sb, *orderBook)) {
+            publishBookUpdate(sym);  // book changed by fill(s)
             return;  // fully filled — nothing left to queue
         }
 
         // Partially filled: queue the unfilled remainder.
         queueOrder(order, sb);
+        publishBookUpdate(sym);  // book changed by fill(s) + queued remainder
         return;
     }
 
     // Non-SPOT orders go straight into the book with no matching
     queueOrder(newOrder, sb);
+    publishBookUpdate(sym);  // book changed by queue
 }
 
 // ── Private helper: insert one order into the book and index it ───────────────
@@ -96,6 +148,9 @@ void OrderManager::queueOrder(const Order& order, SubBook& sb) {
 }
 
 void OrderManager::processCancelOrder(long orderId) {
+    // Capture symbol before the order is erased (iterator becomes invalid after cancel)
+    const std::string sym = orderBook->getOrderSymbol(orderId);
+
     // Retrieve counterparty before the order is erased from the book
     Counterparty* cp = orderBook->getOrderCounterparty(orderId);
 
@@ -105,6 +160,8 @@ void OrderManager::processCancelOrder(long orderId) {
     }
 
     if (cp) cp->removeOrderId(orderId);
+
+    if (!sym.empty()) publishBookUpdate(sym);  // book changed by cancel
 }
 
 SubBook& OrderManager::getSubBook(const std::string& symbol) {

@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include "Counterparty.h"
+#include "EventBus.h"
 #include "OrderBook.h"
 #include "SubBook.h"
 #include "TradeManager.h"
@@ -64,6 +66,26 @@ void TradeManager::logAndNotify(const Trade& trade) {
               << "  Sell#" << trade.sellOrderId
               << " ("  << (trade.seller ? trade.seller->getName() : "?") << ")"
               << "\n";
+
+    // Store in ring buffer (newest at back, capped at 100)
+    recentTrades_.push_back(trade);
+    if (recentTrades_.size() > 100) recentTrades_.pop_front();
+
+    // Publish SSE event to all connected UI clients
+    if (eventBus_) {
+        std::ostringstream j;
+        j << std::fixed << std::setprecision(6);
+        j << "event: trade\ndata: "
+          << "{\"symbol\":\""    << trade.symbol   << "\""
+          << ",\"price\":"       << trade.price
+          << ",\"quantity\":"    << trade.quantity
+          << ",\"buyOrderId\":"  << trade.buyOrderId
+          << ",\"sellOrderId\":" << trade.sellOrderId
+          << ",\"buyer\":\""     << (trade.buyer  ? trade.buyer->getName()  : "") << "\""
+          << ",\"seller\":\""    << (trade.seller ? trade.seller->getName() : "") << "\""
+          << "}\n\n";
+        eventBus_->publish(j.str());
+    }
 
     if (trade.buyer) {
         trade.buyer->onTrade({

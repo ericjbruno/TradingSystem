@@ -5,8 +5,11 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <thread>
 #include <vector>
 #include "Counterparty.h"
+#include "EventBus.h"
+#include "HTTPServer.h"
 #include "OrderManager.h"
 #include "MarketManager.h"
 #include "SubBook.h"
@@ -109,6 +112,10 @@ int main() {
     auto marketManager = std::make_unique<MarketManager>();
     auto orderManager  = std::make_unique<OrderManager>(marketManager.get());
 
+    // Wire the event bus so fills and book changes stream to the UI
+    EventBus eventBus;
+    orderManager->setEventBus(&eventBus);
+
     // Sample counterparties — orders are assigned round-robin
     Counterparty counterparties[] = {
         Counterparty("Goldman Sachs"),
@@ -170,6 +177,12 @@ int main() {
     std::cout << "\nTotal orders processed: " << orderCount << std::endl;
 
     printOrderBook(*orderManager);
+
+    // Start the HTTP server in the foreground (blocks until Ctrl+C)
+    HTTPServer httpServer(*orderManager, eventBus);
+    std::cout << "\nUI available at http://localhost:5173  (run: cd ui && npm run dev)\n";
+    std::cout << "Press Ctrl+C to stop.\n\n";
+    httpServer.start(8080);
 
     return 0;
 }

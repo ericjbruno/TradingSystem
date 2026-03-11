@@ -1,14 +1,14 @@
 # TradingSystem
 
-A C++ forex trading system that processes orders, maintains a live price-time-priority order book, executes SPOT trades via a continuous matching engine, and notifies counterparties of fills.
+A C++ forex trading system that processes orders, maintains a live price-time-priority order book, executes SPOT trades via a continuous matching engine, notifies counterparties of fills, and streams real-time updates to a React UI over Server-Sent Events.
 
 ---
 
 ## Overview
 
-TradingSystem reads forex orders from a CSV file (or accepts them programmatically), attempts to match each incoming SPOT order against the standing book, queues any unfilled remainder, and prints an ASCII snapshot of the resulting order book.
+TradingSystem reads forex orders from a CSV file to seed the initial book state, then serves a REST API and SSE stream so a React UI can submit new orders, cancel existing ones, and display the live order book and trade feed in real time.
 
-The system is designed around a clean layered architecture — presentation, business logic, and data storage — with no external dependencies beyond the C++ standard library.
+The system is designed around a clean layered architecture — presentation, business logic, and data storage — with a single third-party C++ dependency (cpp-httplib, header-only).
 
 ---
 
@@ -20,9 +20,11 @@ The system is designed around a clean layered architecture — presentation, bus
 - **O(1) cancellation** — `OrderLocation` stores a `std::list` iterator and a type-erased `eraseLevel` lambda, enabling stable O(1) removal regardless of map type
 - **Counterparty tracking** — each order carries a non-owning pointer to its counterparty; counterparties maintain a live list of open order IDs and a fill history (`vector<TradeNotification>`)
 - **Trade logging** — every fill is printed to stdout with symbol, quantity, price, and both sides' names and order IDs
+- **REST API** — `HTTPServer` (cpp-httplib) exposes endpoints to submit/cancel orders and query the book and trade history
+- **Real-time SSE** — `EventBus` pub/sub pushes `trade` and `book_update` events to all connected clients immediately after each fill or order change
+- **React UI** — dark terminal-style interface showing a live bid/ask ladder, scrolling trade feed, and order entry form; built with Vite + Zustand
 - All 10 order types (Market, Limit, Stop, Spot, Swap × Buy/Sell) route correctly using the even/odd enum convention
 - Lazy-initialized order book — SubBooks are created on demand per symbol
-- Pure C++ standard library, no third-party dependencies
 - 167-test suite (12 sections) covering routing, price priority, FIFO ordering, cancellation, counterparty tracking, SPOT matching, trade pricing, cascade fills, notification details, and price boundary conditions
 
 ---
@@ -31,18 +33,27 @@ The system is designed around a clean layered architecture — presentation, bus
 
 ```
 TradingSystem/
-├── TradingSystem.cpp      # Entry point — CSV parser, order factory, printOrderBook()
+├── TradingSystem.cpp      # Entry point — CSV parser, order factory, printOrderBook(), HTTP server startup
 ├── Counterparty.cpp / .h  # Counterparty identity, open-order tracking, TradeNotification
 ├── Order.cpp / .h         # Order value object with auto-increment ID and counterparty ref
 ├── OrderType.h            # Order type enum (even=buy, odd=sell)
 ├── OrderBook.cpp / .h     # Central registry: symbol→SubBook map + OrderLocation cancel index
 ├── SubBook.cpp / .h       # BidMap and AskMap type aliases + SubBook container
-├── OrderManager.cpp / .h  # Order lifecycle — matching, queuing, cancellation
-├── TradeManager.cpp / .h  # Matching engine, fill logging, Trade and TradeManager
+├── OrderManager.cpp / .h  # Order lifecycle — matching, queuing, cancellation, book-update SSE events
+├── TradeManager.cpp / .h  # Matching engine, fill logging, trade SSE events, recent trade history
+├── EventBus.cpp / .h      # Thread-safe pub/sub for SSE streaming
+├── HTTPServer.cpp / .h    # REST API + SSE /events endpoint (cpp-httplib)
+├── httplib.h              # cpp-httplib single-header HTTP library (third-party)
 ├── MarketPrice.cpp / .h   # Market price value object
 ├── MarketManager.cpp / .h # Market data stub (future integration)
 ├── tests.cpp              # Test suite (167 tests across 12 sections)
 ├── forex_orders.csv       # 100 sample forex orders; 24 result in trades
+├── run_server.sh          # Build C++ binary and start HTTP server on :8080
+├── run_ui.sh              # Install npm deps (if needed) and start Vite dev server on :5173
+├── ui/                    # React UI (Vite + Zustand)
+│   ├── src/App.jsx        # Bootstrap, SSE setup, layout
+│   ├── src/store/         # Zustand state (books, trades, symbols, connected)
+│   └── src/components/    # OrderBook ladder, TradeFeed, OrderForm, SymbolSelector
 ├── ARCHITECTURE.md        # Detailed architecture documentation
 └── OPTIMIZATIONS.md       # Suggested future performance improvements
 ```
@@ -186,24 +197,38 @@ Any combination of: EUR, GBP, USD, JPY, CHF, AUD, CAD, NZD, SGD, HKD, CNY, MXN, 
 
 ## Build & Run
 
-**Build main binary:**
+### Using the scripts (recommended)
+
 ```bash
-g++ -fdiagnostics-color=always -g \
-    Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
-    MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
-    TradingSystem.cpp -o TradingSystem
+# Terminal 1 — build C++ and start HTTP server on :8080
+./run_server.sh
+
+# Terminal 2 — start React dev server on :5173
+./run_ui.sh
+# Open http://localhost:5173
 ```
 
-**Run:**
+### Manual build
+
+**C++ server:**
 ```bash
+g++ -std=c++17 -fdiagnostics-color=always -g \
+    Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
+    MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
+    EventBus.cpp HTTPServer.cpp TradingSystem.cpp \
+    -lpthread -o TradingSystem
 ./TradingSystem
 ```
 
-**Expected output (excerpt):**
+**React UI:**
+```bash
+cd ui && npm install && npm run dev
+```
+
+**Expected server output (excerpt):**
 ```
 Processed order #1: BUY 9847 EUR/USD @ 1.0842  [Goldman Sachs]
 [TRADE] EUR/USD  qty=500  @ 1.0842  | Buy#3 (Deutsche Bank)  Sell#1 (Goldman Sachs)
-Processed order #2: SELL 10523 GBP/USD @ 1.2634  [JP Morgan]
 ...
 Total orders processed: 100
 
@@ -220,6 +245,10 @@ Total orders processed: 100
       1.0842      9,847    [#1]   <- best bid
       1.0835     10,789    [#51]
   ================================================================
+
+HTTP server listening on http://localhost:8080
+UI available at http://localhost:5173  (run: cd ui && npm run dev)
+Press Ctrl+C to stop.
 ```
 
 ---
@@ -232,7 +261,7 @@ The test suite lives in `tests.cpp` and uses a minimal pass/fail framework with 
 ```bash
 g++ -std=c++17 -fdiagnostics-color=always -g \
     Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
-    MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
+    MarketPrice.cpp MarketManager.cpp TradeManager.cpp EventBus.cpp \
     tests.cpp -o run_tests
 
 ./run_tests                        # all 12 sections (167 checks)
@@ -265,10 +294,11 @@ Sections are filtered by a case-sensitive substring match on the section name. A
 ## Current Status
 
 - SPOT order matching is fully implemented with partial fills and counterparty notifications
+- REST API and SSE streaming are live — the React UI can submit/cancel orders and see real-time book and trade updates
 - `MarketManager` remains a stub (no live data feeds)
 - MARKET, LIMIT, STOP, and SWAP orders are queued but not yet matched against each other
 - No persistence layer — all state is in-memory
-- Single-threaded only
+- HTTP requests are serialised through a single mutex; the matching engine is not independently thread-safe
 
 ---
 
@@ -277,8 +307,7 @@ Sections are filtered by a case-sensitive substring match on the section name. A
 - Matching engine for LIMIT, STOP, and SWAP order types
 - Real-time market data integration (WebSocket / FIX protocol)
 - Order modification (price / quantity amendment)
-- Trade and order history / audit trail
 - Position and portfolio management
 - Risk management and limits
 - Database persistence
-- Multi-threaded order processing
+- Fine-grained locking for higher-throughput multi-threaded processing

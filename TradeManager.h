@@ -1,9 +1,12 @@
 #ifndef TRADEMANAGER_H
 #define TRADEMANAGER_H
 
+#include <deque>
 #include <string>
 #include "Counterparty.h"
 #include "Order.h"
+
+class EventBus;  // forward declaration — TradeManager holds a non-owning pointer
 
 class SubBook;   // forward declarations — full types only needed in TradeManager.cpp
 class OrderBook;
@@ -21,9 +24,15 @@ struct Trade {
 
 class TradeManager
 {
+    EventBus*         eventBus_{nullptr};
+    std::deque<Trade> recentTrades_;   // capped at 100; newest at back
+
 public:
     TradeManager();
     ~TradeManager();
+
+    void setEventBus(EventBus* bus) { eventBus_ = bus; }
+    const std::deque<Trade>& getRecentTrades() const { return recentTrades_; }
 
     bool checkForTrade(const Order& order, double marketPrice);
     bool checkForSecuritiesTrade(const Order& order, double marketPrice);

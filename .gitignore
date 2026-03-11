@@ -3,6 +3,7 @@ OrderEntry
 SubBook
 TradingSystem
 trading_system
+run_tests
 
 # Build artifacts
 *.o
@@ -13,3 +14,7 @@ trading_system
 
 # Claude metadata
 .claude/
+
+# React / Node
+ui/node_modules/
+ui/.vite/
