@@ -8,10 +8,17 @@
 #include "SubBook.h"
 
 // ─── Minimal test framework ───────────────────────────────────────────────────
+//
+// Run all sections:          ./tests
+// Run one section by name:   ./tests "Trade Pricing"
+// (substring match, case-sensitive)
 
-static int passed = 0, failed = 0;
+static int  passed = 0, failed = 0;
+static bool sectionActive = true;   // true when current section passes the filter
+static std::string testFilter;      // empty = run all sections
 
 void check(const std::string& name, bool result) {
+    if (!sectionActive) return;
     if (result) {
         std::cout << "  [PASS] " << name << "\n";
         ++passed;
@@ -22,12 +29,17 @@ void check(const std::string& name, bool result) {
 }
 
 void section(const std::string& name) {
-    std::cout << "\n" << name << "\n" << std::string(name.size(), '-') << "\n";
+    sectionActive = testFilter.empty() ||
+                    name.find(testFilter) != std::string::npos;
+    if (sectionActive)
+        std::cout << "\n" << name << "\n" << std::string(name.size(), '-') << "\n";
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc > 1) testFilter = argv[1];
+
     MarketManager mm;
     OrderManager om(&mm);
 
@@ -274,9 +286,8 @@ int main() {
         Counterparty buyer("Buyer.A"), seller("Seller.A");
         Order bid("MATCH/EXACT", 1.1000, 100, OrderType::SPOT_BUY,  &buyer);
         Order ask("MATCH/EXACT", 1.1000, 100, OrderType::SPOT_SELL, &seller);
-        long bidId = bid.getId();
 
-        om.processNewOrder(bid);   // queued; buyer now tracks bidId
+        om.processNewOrder(bid);   // queued; buyer now tracks bid ID
         om.processNewOrder(ask);   // matches bid; both fully consumed
 
         SubBook& sb = om.getSubBook("MATCH/EXACT");
@@ -416,6 +427,304 @@ int main() {
         check("Sell exact: seller never queued",      seller.getOrderIds().empty());
         check("Sell exact: buyer's counterparty name seen by seller",
               seller.getTrades()[0].counterpartyName == "Buyer.G");
+    }
+
+    // ── 8. Trade Pricing — execution at the maker (standing-order) price ─────
+    section("Trade Pricing");
+
+    // 8a. Incoming BUY with bid > ask: fills at the ask price, not the bid
+    {
+        Counterparty buyer("TP.Buyer.A"), seller("TP.Seller.A");
+        Order ask("TP/A", 1.1000, 100, OrderType::SPOT_SELL, &seller);
+        Order bid("TP/A", 1.1050, 100, OrderType::SPOT_BUY,  &buyer);
+
+        om.processNewOrder(ask);
+        om.processNewOrder(bid);
+
+        check("TP 8a: fills at ask price 1.1000, not bid 1.1050",
+              buyer.getTrades()[0].price == 1.1000);
+    }
+
+    // 8b. Incoming SELL with ask < bid: fills at the bid price, not the ask
+    {
+        Counterparty buyer("TP.Buyer.B"), seller("TP.Seller.B");
+        Order bid("TP/B", 1.2000, 100, OrderType::SPOT_BUY,  &buyer);
+        Order ask("TP/B", 1.1950, 100, OrderType::SPOT_SELL, &seller);
+
+        om.processNewOrder(bid);
+        om.processNewOrder(ask);
+
+        check("TP 8b: fills at bid price 1.2000, not ask 1.1950",
+              seller.getTrades()[0].price == 1.2000);
+    }
+
+    // 8c. Sweep across two price levels: each fill executes at its own level's price
+    {
+        Counterparty buyer("TP.Buyer.C"), sellerLo("TP.Seller.CLo"), sellerHi("TP.Seller.CHi");
+        Order askLo("TP/C", 1.0500, 100, OrderType::SPOT_SELL, &sellerLo);
+        Order askHi("TP/C", 1.0520, 100, OrderType::SPOT_SELL, &sellerHi);
+        Order bid  ("TP/C", 1.0600, 200, OrderType::SPOT_BUY,  &buyer);
+
+        om.processNewOrder(askLo);
+        om.processNewOrder(askHi);
+        om.processNewOrder(bid);
+
+        check("TP 8c: first fill at lower ask level 1.0500",  buyer.getTrades()[0].price == 1.0500);
+        check("TP 8c: second fill at higher ask level 1.0520", buyer.getTrades()[1].price == 1.0520);
+    }
+
+    // ── 9. FIFO Fill Order Within a Price Level ───────────────────────────────
+    section("FIFO Fill Order");
+
+    // 9a. Two asks at the same price — the first one placed is filled first
+    {
+        Counterparty buyer("FF.Buyer.A"), sellerFirst("FF.Seller.First"), sellerSecond("FF.Seller.Second");
+        Order askFirst ("FF/A", 1.0000, 100, OrderType::SPOT_SELL, &sellerFirst);
+        Order askSecond("FF/A", 1.0000, 100, OrderType::SPOT_SELL, &sellerSecond);
+        Order bid      ("FF/A", 1.0000, 100, OrderType::SPOT_BUY,  &buyer);
+
+        om.processNewOrder(askFirst);
+        om.processNewOrder(askSecond);
+        om.processNewOrder(bid);  // exactly fills askFirst; askSecond untouched
+
+        SubBook& sb = om.getSubBook("FF/A");
+        auto&    asks = sb.getSellOrdersRef();
+        check("FF 9a: one ask level remains",              asks.size() == 1);
+        check("FF 9a: remaining order is askSecond",       asks.begin()->second.front().getId() == askSecond.getId());
+        check("FF 9a: first seller was notified",          sellerFirst.getTrades().size()  == 1);
+        check("FF 9a: second seller was NOT notified",     sellerSecond.getTrades().empty());
+        check("FF 9a: buyer was notified",                 buyer.getTrades().size() == 1);
+    }
+
+    // 9b. Two bids at the same price — the first one placed is filled first
+    {
+        Counterparty seller("FF.Seller.B"), buyerFirst("FF.Buyer.First"), buyerSecond("FF.Buyer.Second");
+        Order bidFirst ("FF/B", 1.5000, 100, OrderType::SPOT_BUY,  &buyerFirst);
+        Order bidSecond("FF/B", 1.5000, 100, OrderType::SPOT_BUY,  &buyerSecond);
+        Order ask      ("FF/B", 1.5000, 100, OrderType::SPOT_SELL, &seller);
+
+        om.processNewOrder(bidFirst);
+        om.processNewOrder(bidSecond);
+        om.processNewOrder(ask);  // exactly fills bidFirst; bidSecond untouched
+
+        SubBook& sb   = om.getSubBook("FF/B");
+        auto&    bids = sb.getBuyOrdersRef();
+        check("FF 9b: one bid level remains",              bids.size() == 1);
+        check("FF 9b: remaining order is bidSecond",       bids.begin()->second.front().getId() == bidSecond.getId());
+        check("FF 9b: first buyer was notified",           buyerFirst.getTrades().size()  == 1);
+        check("FF 9b: second buyer was NOT notified",      buyerSecond.getTrades().empty());
+    }
+
+    // 9c. Large incoming buy consumes first ask entirely, then partially fills second
+    {
+        Counterparty buyer("FF.Buyer.C"), sellerA("FF.Seller.CA"), sellerB("FF.Seller.CB");
+        Order askA("FF/C", 2.0000, 100, OrderType::SPOT_SELL, &sellerA);
+        Order askB("FF/C", 2.0000, 200, OrderType::SPOT_SELL, &sellerB);
+        Order bid ("FF/C", 2.0000, 250, OrderType::SPOT_BUY,  &buyer);
+
+        om.processNewOrder(askA);
+        om.processNewOrder(askB);
+        om.processNewOrder(bid);  // consumes all 100 of askA, then 150 of askB
+
+        SubBook& sb = om.getSubBook("FF/C");
+        check("FF 9c: buyer got 2 trade fills",             buyer.getTrades().size() == 2);
+        check("FF 9c: first fill qty=100 (all of askA)",    buyer.getTrades()[0].quantity == 100);
+        check("FF 9c: second fill qty=150 (partial askB)",  buyer.getTrades()[1].quantity == 150);
+        check("FF 9c: sellerA fully consumed",              sellerA.getTrades()[0].quantity == 100);
+        check("FF 9c: sellerB partially filled (qty=150)",  sellerB.getTrades()[0].quantity == 150);
+        check("FF 9c: askB remainder in book = 50",
+              sb.getSellOrdersRef().begin()->second.front().getQuantity() == 50);
+    }
+
+    // ── 10. Trade Notification Details ───────────────────────────────────────
+    section("Trade Notification Details");
+
+    // 10a. Order IDs in notifications are correct for both sides
+    {
+        Counterparty buyer("ND.Buyer.A"), seller("ND.Seller.A");
+        Order bid("ND/A", 1.0000, 100, OrderType::SPOT_BUY,  &buyer);
+        Order ask("ND/A", 1.0000, 100, OrderType::SPOT_SELL, &seller);
+
+        om.processNewOrder(bid);
+        om.processNewOrder(ask);
+
+        check("ND 10a: buyer's notification has buyer's order ID",
+              buyer.getTrades()[0].orderId  == bid.getId());
+        check("ND 10a: seller's notification has seller's order ID",
+              seller.getTrades()[0].orderId == ask.getId());
+    }
+
+    // 10b. Both sides see the same execution price
+    {
+        Counterparty buyer("ND.Buyer.B"), seller("ND.Seller.B");
+        Order bid("ND/B", 1.3000, 200, OrderType::SPOT_BUY,  &buyer);
+        Order ask("ND/B", 1.2950, 200, OrderType::SPOT_SELL, &seller);
+
+        om.processNewOrder(bid);
+        om.processNewOrder(ask);
+
+        check("ND 10b: buyer and seller see same price",
+              buyer.getTrades()[0].price == seller.getTrades()[0].price);
+        check("ND 10b: execution price is the maker bid price 1.3000",
+              buyer.getTrades()[0].price == 1.3000);
+    }
+
+    // 10c. Counterparty names cross-reference correctly
+    {
+        Counterparty buyer("ND.Buyer.C"), seller("ND.Seller.C");
+        Order bid("ND/C", 1.0000, 50, OrderType::SPOT_BUY,  &buyer);
+        Order ask("ND/C", 1.0000, 50, OrderType::SPOT_SELL, &seller);
+
+        om.processNewOrder(bid);
+        om.processNewOrder(ask);
+
+        check("ND 10c: buyer sees seller's name",
+              buyer.getTrades()[0].counterpartyName  == "ND.Seller.C");
+        check("ND 10c: seller sees buyer's name",
+              seller.getTrades()[0].counterpartyName == "ND.Buyer.C");
+    }
+
+    // 10d. Partial fill: notification quantity is the fill qty, not the original order qty
+    {
+        Counterparty buyer("ND.Buyer.D"), seller("ND.Seller.D");
+        Order ask("ND/D", 1.0000, 500, OrderType::SPOT_SELL, &seller);
+        Order bid("ND/D", 1.0000, 150, OrderType::SPOT_BUY,  &buyer);
+
+        om.processNewOrder(ask);  // 500 qty standing
+        om.processNewOrder(bid);  // fills 150
+
+        check("ND 10d: buyer notification qty = 150 (fill), not 150 (same here)",
+              buyer.getTrades()[0].quantity  == 150);
+        check("ND 10d: seller notification qty = 150 (fill), not 500 (original)",
+              seller.getTrades()[0].quantity == 150);
+        check("ND 10d: seller's ask remainder in book = 350",
+              om.getSubBook("ND/D").getSellOrdersRef().begin()->second.front().getQuantity() == 350);
+    }
+
+    // ── 11. Cascade Fills — remainder of one trade matches a later order ──────
+    section("Cascade Fills");
+
+    // 11a. Buy partially fills ask; later sell matches the remaining buy remainder
+    {
+        Counterparty buyer("CF.Buyer.A"), seller1("CF.Seller.A1"), seller2("CF.Seller.A2");
+        Order ask1("CF/A", 1.0000, 100, OrderType::SPOT_SELL, &seller1);
+        Order bid ("CF/A", 1.0000, 300, OrderType::SPOT_BUY,  &buyer);   // fills 100, 200 remainder queued
+        Order ask2("CF/A", 1.0000, 200, OrderType::SPOT_SELL, &seller2); // matches the 200 remainder
+
+        om.processNewOrder(ask1);
+        om.processNewOrder(bid);   // trade 1: buyer(300) vs seller1(100) → 100 filled, 200 remainder
+        om.processNewOrder(ask2);  // trade 2: buyer's remainder(200) vs seller2(200) → fully consumed
+
+        SubBook& sb = om.getSubBook("CF/A");
+        check("CF 11a: book empty after cascade",           sb.getBuyOrdersRef().empty() && sb.getSellOrdersRef().empty());
+        check("CF 11a: buyer received 2 trade notifications", buyer.getTrades().size()  == 2);
+        check("CF 11a: seller1 received 1 notification",     seller1.getTrades().size() == 1);
+        check("CF 11a: seller2 received 1 notification",     seller2.getTrades().size() == 1);
+        check("CF 11a: first fill qty=100",                  buyer.getTrades()[0].quantity == 100);
+        check("CF 11a: second fill qty=200",                 buyer.getTrades()[1].quantity == 200);
+        check("CF 11a: buyer order ID removed after full fill", buyer.getOrderIds().empty());
+    }
+
+    // 11b. Sell partially fills bid; later buy matches the remaining sell remainder
+    {
+        Counterparty seller("CF.Seller.B"), buyer1("CF.Buyer.B1"), buyer2("CF.Buyer.B2");
+        Order bid1("CF/B", 1.0000, 100, OrderType::SPOT_BUY,  &buyer1);
+        Order ask ("CF/B", 1.0000, 300, OrderType::SPOT_SELL, &seller);  // fills 100, 200 remainder queued
+        Order bid2("CF/B", 1.0000, 200, OrderType::SPOT_BUY,  &buyer2); // matches the 200 remainder
+
+        om.processNewOrder(bid1);
+        om.processNewOrder(ask);   // trade 1: seller(300) vs buyer1(100) → 100 filled, 200 remainder
+        om.processNewOrder(bid2);  // trade 2: seller's remainder(200) vs buyer2(200) → fully consumed
+
+        SubBook& sb = om.getSubBook("CF/B");
+        check("CF 11b: book empty after cascade",             sb.getBuyOrdersRef().empty() && sb.getSellOrdersRef().empty());
+        check("CF 11b: seller received 2 trade notifications", seller.getTrades().size()  == 2);
+        check("CF 11b: buyer1 received 1 notification",        buyer1.getTrades().size() == 1);
+        check("CF 11b: buyer2 received 1 notification",        buyer2.getTrades().size() == 1);
+        check("CF 11b: second fill qty=200",                   seller.getTrades()[1].quantity == 200);
+        check("CF 11b: seller order ID removed after full fill", seller.getOrderIds().empty());
+    }
+
+    // 11c. Three-order chain: ask partially filled → remainder matched by bid → bid remainder queued
+    {
+        Counterparty buyerA("CF.Buyer.CA"), sellerB("CF.Seller.CB"), buyerC("CF.Buyer.CC");
+        Order askB("CF/C", 1.0000, 500, OrderType::SPOT_SELL, &sellerB);  // standing ask
+        Order bidA("CF/C", 1.0000, 200, OrderType::SPOT_BUY,  &buyerA);  // fills 200 of askB
+        Order bidC("CF/C", 1.0000, 400, OrderType::SPOT_BUY,  &buyerC);  // fills remaining 300 of askB, 100 left over
+
+        om.processNewOrder(askB);
+        om.processNewOrder(bidA);  // trade: askB(500) vs bidA(200) → askB has 300 remaining
+        om.processNewOrder(bidC);  // trade: askB's 300 remainder vs bidC(400) → bidC has 100 remaining, askB consumed
+
+        SubBook& sb = om.getSubBook("CF/C");
+        check("CF 11c: ask side empty (askB fully consumed)",  sb.getSellOrdersRef().empty());
+        check("CF 11c: bid side has bidC remainder of 100",
+              !sb.getBuyOrdersRef().empty() &&
+              sb.getBuyOrdersRef().begin()->second.front().getQuantity() == 100);
+        check("CF 11c: sellerB got 2 fills (200 + 300)",       sellerB.getTrades().size() == 2);
+        check("CF 11c: buyerA got 1 fill of 200",              buyerA.getTrades().size()  == 1);
+        check("CF 11c: buyerC got 1 fill of 300",              buyerC.getTrades().size()  == 1);
+        check("CF 11c: buyerC's fill qty = 300 (not 400)",     buyerC.getTrades()[0].quantity == 300);
+        check("CF 11c: buyerC still tracks its remainder",     buyerC.getOrderIds().size() == 1);
+    }
+
+    // ── 12. Price Boundary Conditions ────────────────────────────────────────
+    section("Price Boundary Conditions");
+
+    // 12a. Bid exactly equals ask → trade executes (>= is inclusive)
+    {
+        Counterparty buyer("PB.Buyer.A"), seller("PB.Seller.A");
+        Order ask("PB/A", 1.0500, 100, OrderType::SPOT_SELL, &seller);
+        Order bid("PB/A", 1.0500, 100, OrderType::SPOT_BUY,  &buyer);
+
+        om.processNewOrder(ask);
+        om.processNewOrder(bid);
+
+        check("PB 12a: bid == ask triggers a trade",           buyer.getTrades().size()  == 1);
+        check("PB 12a: book is empty after exact match",       om.getSubBook("PB/A").getBuyOrdersRef().empty() &&
+                                                               om.getSubBook("PB/A").getSellOrdersRef().empty());
+    }
+
+    // 12b. Bid one pip below ask → no trade; both sides queued
+    {
+        Counterparty buyer("PB.Buyer.B"), seller("PB.Seller.B");
+        Order ask("PB/B", 1.0500,  100, OrderType::SPOT_SELL, &seller);
+        Order bid("PB/B", 1.0499,  100, OrderType::SPOT_BUY,  &buyer);
+
+        om.processNewOrder(ask);
+        om.processNewOrder(bid);
+
+        SubBook& sb = om.getSubBook("PB/B");
+        check("PB 12b: bid one pip below ask → no trade",  buyer.getTrades().empty());
+        check("PB 12b: ask stays in book",                 !sb.getSellOrdersRef().empty());
+        check("PB 12b: bid stays in book",                 !sb.getBuyOrdersRef().empty());
+    }
+
+    // 12c. Incoming sell at exactly the standing bid price → trade executes
+    {
+        Counterparty buyer("PB.Buyer.C"), seller("PB.Seller.C");
+        Order bid("PB/C", 1.1000, 100, OrderType::SPOT_BUY,  &buyer);
+        Order ask("PB/C", 1.1000, 100, OrderType::SPOT_SELL, &seller);
+
+        om.processNewOrder(bid);
+        om.processNewOrder(ask);  // ask == bid → should trade
+
+        check("PB 12c: ask == bid triggers a trade",        seller.getTrades().size() == 1);
+        check("PB 12c: execution price equals bid 1.1000",  seller.getTrades()[0].price == 1.1000);
+    }
+
+    // 12d. Incoming sell one pip above standing bid → no trade
+    {
+        Counterparty buyer("PB.Buyer.D"), seller("PB.Seller.D");
+        Order bid("PB/D", 1.1000, 100, OrderType::SPOT_BUY,  &buyer);
+        Order ask("PB/D", 1.1001, 100, OrderType::SPOT_SELL, &seller);
+
+        om.processNewOrder(bid);
+        om.processNewOrder(ask);
+
+        check("PB 12d: ask one pip above bid → no trade",   seller.getTrades().empty());
+        check("PB 12d: bid stays in book",                  !om.getSubBook("PB/D").getBuyOrdersRef().empty());
+        check("PB 12d: ask stays in book",                  !om.getSubBook("PB/D").getSellOrdersRef().empty());
     }
 
     // ── Summary ───────────────────────────────────────────────────────────────

@@ -31,7 +31,7 @@ TradingSystem/
 │   └── MarketManager.h
 │
 ├── Data Files
-│   └── forex_orders.csv     # Sample forex order data
+│   └── forex_orders.csv     # 100 sample forex orders; 24 result in trades (24%)
 │
 └── Build Configuration
     └── .vscode/
@@ -435,11 +435,58 @@ g++ -fdiagnostics-color=always -g \
 
 **Test binary (`tests.cpp` has its own `main` and is excluded from above):**
 ```bash
-g++ -fdiagnostics-color=always -g \
+g++ -std=c++17 -fdiagnostics-color=always -g \
     Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
     MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
     tests.cpp -o run_tests
+
+./run_tests                   # all sections
+./run_tests "Cascade Fills"   # one section in isolation
 ```
+
+---
+
+## Test Suite
+
+### Framework
+
+`tests.cpp` contains a minimal hand-rolled test framework (no third-party dependencies). It provides:
+
+- `section(name)` — starts a named group; prints a header if active
+- `check(name, bool)` — records a pass or fail for one assertion
+- Summary line at the end: `Results: N passed, M failed`; exits non-zero on any failure
+
+### Isolation via Command-Line Filter
+
+All test sections are always *executed* (so book state is consistent for later sections), but `check()` calls only count toward the result in the active section. The filter is a case-sensitive substring match against the section name.
+
+```bash
+./run_tests                          # run all 12 sections (167 checks)
+./run_tests "Trade Pricing"          # section 8 only
+./run_tests "FIFO Fill Order"        # section 9 only
+./run_tests "Trade Notification"     # section 10 only
+./run_tests "Cascade Fills"          # section 11 only
+./run_tests "Price Boundary"         # section 12 only
+./run_tests "SPOT Matching"          # section 7 only
+./run_tests "Order Routing"          # section 1 only
+```
+
+### Test Sections
+
+| # | Section | Checks | What it covers |
+|---|---------|--------|----------------|
+| 1 | Order Routing | 20 | All 10 order types route to the correct buy/sell side |
+| 2 | Buy-Side Price Priority | 3 | BidMap `begin()` == highest price |
+| 3 | Sell-Side Price Priority | 3 | AskMap `begin()` == lowest price |
+| 4 | Time Priority within Price Level | 7 | FIFO ordering within a price-level list |
+| 5 | Order Cancellation | 6 | Last-order level removal; partial cancel; invalid cancel |
+| 6 | Counterparty Tracking | 14 | Order ID registration, deregistration, independence |
+| 7 | SPOT Matching Engine | 40 | Exact match, partial fills (buy/ask-side), sweeps, no-match |
+| 8 | Trade Pricing | 4 | Execution price is always the maker's (standing order's) price |
+| 9 | FIFO Fill Order | 12 | Orders at the same price fill in strict arrival order |
+| 10 | Trade Notification Details | 11 | Order IDs, prices, counterparty names, and fill quantities in notifications |
+| 11 | Cascade Fills | 20 | Partially-filled order remainder matches a subsequent incoming order |
+| 12 | Price Boundary Conditions | 11 | `bid >= ask` inclusive boundary; one pip below → no trade |
 
 ---
 
@@ -451,6 +498,16 @@ Symbol,Price,Quantity,Side
 EUR/USD,1.0842,9847,BUY
 GBP/USD,1.2634,10523,SELL
 ```
+
+### Sample Data (`forex_orders.csv`)
+
+100 orders across 25 currency pairs (4 orders per symbol, alternating sides where they cross). Of those 100 orders, **24 result in at least one trade** when processed sequentially. Trades arise from three patterns:
+
+| Pattern | Example | Count |
+|---------|---------|-------|
+| 2nd-occurrence opposite-side price cross | BUY@1.2645 vs standing SELL@1.2634 | 8 |
+| 3rd-occurrence matches accumulated same-side bids/asks | SELL@161.67 vs bids at 162.01 and 161.82 | 6 |
+| 4th-occurrence matches remainder from an earlier partial fill | BUY@1.2638 vs remaining SELL@1.2621 | 10 |
 
 ### Supported Currency Pairs
 EUR, GBP, USD, JPY, CHF, AUD, CAD, NZD, SGD, HKD, CNY, MXN, ZAR combinations

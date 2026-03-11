@@ -23,7 +23,7 @@ The system is designed around a clean layered architecture — presentation, bus
 - All 10 order types (Market, Limit, Stop, Spot, Swap × Buy/Sell) route correctly using the even/odd enum convention
 - Lazy-initialized order book — SubBooks are created on demand per symbol
 - Pure C++ standard library, no third-party dependencies
-- 109-test suite covering routing, price priority, time priority, cancellation, counterparty tracking, and 7 SPOT matching scenarios
+- 167-test suite (12 sections) covering routing, price priority, FIFO ordering, cancellation, counterparty tracking, SPOT matching, trade pricing, cascade fills, notification details, and price boundary conditions
 
 ---
 
@@ -41,8 +41,8 @@ TradingSystem/
 ├── TradeManager.cpp / .h  # Matching engine, fill logging, Trade and TradeManager
 ├── MarketPrice.cpp / .h   # Market price value object
 ├── MarketManager.cpp / .h # Market data stub (future integration)
-├── tests.cpp              # Test suite (109 tests)
-├── forex_orders.csv       # Sample input data
+├── tests.cpp              # Test suite (167 tests across 12 sections)
+├── forex_orders.csv       # 100 sample forex orders; 24 result in trades
 ├── ARCHITECTURE.md        # Detailed architecture documentation
 └── OPTIMIZATIONS.md       # Suggested future performance improvements
 ```
@@ -230,25 +230,35 @@ The test suite lives in `tests.cpp` and uses a minimal pass/fail framework with 
 
 **Build and run:**
 ```bash
-g++ -fdiagnostics-color=always -g \
+g++ -std=c++17 -fdiagnostics-color=always -g \
     Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
     MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
     tests.cpp -o run_tests
 
-./run_tests
+./run_tests                        # all 12 sections (167 checks)
+./run_tests "Cascade Fills"        # one section in isolation
+./run_tests "Trade Pricing"
+./run_tests "Price Boundary"
 ```
 
-**Test sections (109 tests total):**
+Sections are filtered by a case-sensitive substring match on the section name. All orders still execute when a filter is active (so book state remains consistent), but only checks inside the matching section count toward the result.
 
-| Section | Tests | What is verified |
-|---------|-------|-----------------|
-| Order Routing | 20 | All 10 order types route to the correct side |
-| Buy-Side Price Priority | 3 | `begin()` returns best bid (highest); `rbegin()` returns lowest |
-| Sell-Side Price Priority | 3 | `begin()` returns best ask (lowest); `rbegin()` returns highest |
-| Time Priority (FIFO) | 7 | Orders at the same price level maintain strict insertion order |
-| Order Cancellation | 7 | Price level removed on last cancel; preserved on partial cancel; invalid ID is a no-op |
-| Counterparty Tracking | 12 | IDs accumulate on submit, removed on cancel; two counterparties track independently; bogus cancel is a no-op |
-| SPOT Matching Engine | 57 | Exact match, partial buy/ask fills, buy/sell multi-level sweeps, no-match guard, sell-exact mirror; counterparty name in notifications |
+**Test sections (167 tests total):**
+
+| # | Section | Tests | What is verified |
+|---|---------|-------|-----------------|
+| 1 | Order Routing | 20 | All 10 order types route to the correct side |
+| 2 | Buy-Side Price Priority | 3 | `begin()` returns best bid (highest price) |
+| 3 | Sell-Side Price Priority | 3 | `begin()` returns best ask (lowest price) |
+| 4 | Time Priority (FIFO) | 7 | Orders at the same price level fill in strict insertion order |
+| 5 | Order Cancellation | 6 | Level removed on last cancel; preserved on partial cancel; invalid ID is a no-op |
+| 6 | Counterparty Tracking | 14 | IDs accumulate on submit, removed on cancel; two counterparties track independently |
+| 7 | SPOT Matching Engine | 40 | Exact match, partial buy/ask fills, multi-level sweeps, no-match guard, sell-exact mirror |
+| 8 | Trade Pricing | 4 | Execution always occurs at the maker's (standing order's) price, not the aggressor's |
+| 9 | FIFO Fill Order | 12 | Multiple resting orders at the same price fill in arrival order |
+| 10 | Trade Notification Details | 11 | Order IDs, prices, counterparty names, and fill quantities in `TradeNotification` |
+| 11 | Cascade Fills | 20 | Partially-filled order remainder is matchable by a subsequent incoming order |
+| 12 | Price Boundary Conditions | 11 | `bid >= ask` is inclusive; one pip below/above → no trade |
 
 ---
 
