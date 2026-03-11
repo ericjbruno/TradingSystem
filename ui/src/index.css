@@ -28,7 +28,7 @@ html, body, #root {
 /* ── Layout ───────────────────────────────────────────────────────────────── */
 .app {
   display: grid;
-  grid-template-rows: 48px 1fr auto;
+  grid-template-rows: 48px auto 1fr auto;
   height: 100vh;
   overflow: hidden;
 }
@@ -272,6 +272,72 @@ html, body, #root {
 }
 .form-status.ok  { background: var(--bid-dim);  color: var(--bid); }
 .form-status.err { background: var(--ask-dim);  color: var(--ask); }
+
+/* ── Market Summary ───────────────────────────────────────────────────────── */
+.market-summary {
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ms-header {
+  display: grid;
+  grid-template-columns: 90px 110px 110px 110px 80px;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.ms-col-num  { text-align: right; }
+.ms-col-time { text-align: right; }
+
+.ms-body {
+  overflow-y: auto;
+  max-height: 300px; /* 10 rows × 30px */
+}
+
+.ms-row {
+  display: grid;
+  grid-template-columns: 90px 110px 110px 110px 80px;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+  line-height: 1;
+}
+.ms-row:hover { background: var(--bg3); }
+
+.ms-name {
+  color: var(--gold);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.ms-cell {
+  font-size: 12px;
+  color: #8b949e;
+  transition: color 0.4s ease;
+}
+
+.ms-cell.flash {
+  color: var(--gold);
+  transition: none;
+}
+
+.ms-time { font-size: 11px; }
+
+.ms-empty {
+  padding: 16px 12px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
 
 /* ── Scrollbar ────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar       { width: 6px; }

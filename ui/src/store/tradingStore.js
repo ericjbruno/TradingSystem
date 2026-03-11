@@ -4,6 +4,7 @@ const useStore = create((set) => ({
   selectedSymbol: null,
   symbols: [],
   books: {},      // symbol → { symbol, bids: [{price, quantity, orderIds}], asks: [...] }
+  bookTimes: {},  // symbol → timestamp (ms) of last update
   trades: [],     // array of trade objects, newest first
   connected: false,
 
@@ -12,7 +13,8 @@ const useStore = create((set) => ({
   setConnected: (c)  => set({ connected: c }),
 
   updateBook: (b) => set((state) => ({
-    books: { ...state.books, [b.symbol]: b }
+    books:     { ...state.books,     [b.symbol]: b },
+    bookTimes: { ...state.bookTimes, [b.symbol]: Date.now() },
   })),
 
   addTrade: (t) => set((state) => ({

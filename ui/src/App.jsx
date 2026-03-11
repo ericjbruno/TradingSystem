@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import useStore from './store/tradingStore'
 import SymbolSelector from './components/SymbolSelector'
+import MarketSummary from './components/MarketSummary'
 import OrderBook from './components/OrderBook'
 import TradeFeed from './components/TradeFeed'
 import OrderForm from './components/OrderForm'
@@ -63,6 +64,8 @@ export default function App() {
         </div>
         <SymbolSelector />
       </header>
+
+      <MarketSummary />
 
       <main className="main">
         <section className="panel book-panel">
