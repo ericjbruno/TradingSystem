@@ -182,7 +182,7 @@ int main() {
     HTTPServer httpServer(*orderManager, eventBus);
     std::cout << "\nUI available at http://localhost:5173  (run: cd ui && npm run dev)\n";
     std::cout << "Press Ctrl+C to stop.\n\n";
-    httpServer.start(8080);
+    httpServer.start(9090);
 
     return 0;
 }
