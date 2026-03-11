@@ -10,7 +10,7 @@ const API = 'http://localhost:9090'
 
 export default function App() {
   const {
-    selectedSymbol, books, trades, connected,
+    selectedSymbol, symbols, books, bookTimes, trades, connected,
     setSymbols, updateBook, addTrade, setConnected, initTrades, setSymbol
   } = useStore()
 
@@ -62,15 +62,15 @@ export default function App() {
           <span className="dot">{connected ? '●' : '○'}</span>
           {connected ? 'Live' : 'Disconnected'}
         </div>
-        <SymbolSelector />
       </header>
 
-      <MarketSummary />
+      <MarketSummary symbols={symbols} books={books} bookTimes={bookTimes} />
 
       <main className="main">
         <section className="panel book-panel">
           <div className="panel-title">
-            Order Book — <span className="symbol-label">{selectedSymbol || '—'}</span>
+            <span>Order Book</span>
+            <SymbolSelector />
           </div>
           <OrderBook book={selectedSymbol ? books[selectedSymbol] : null} />
         </section>

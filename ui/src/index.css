@@ -60,7 +60,6 @@ html, body, #root {
 .dot { font-size: 10px; }
 
 .symbol-select {
-  margin-left: auto;
   background: var(--bg3);
   color: var(--text);
   border: 1px solid var(--border);
@@ -85,7 +84,10 @@ html, body, #root {
 }
 
 .panel-title {
-  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
   font-size: 11px;

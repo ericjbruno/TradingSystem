@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import useStore from '../store/tradingStore'
 
 function fmtPrice(price) {
   if (price == null) return '—'
@@ -20,8 +19,7 @@ function fmtTime(ms) {
   })
 }
 
-export default function MarketSummary() {
-  const { symbols, books, bookTimes } = useStore()
+export default function MarketSummary({ symbols, books, bookTimes }) {
   const [flashing, setFlashing] = useState({})
   const prevRef   = useRef({})
   const timersRef = useRef({})
