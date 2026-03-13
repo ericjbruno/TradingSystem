@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import useStore from './store/tradingStore'
 import SymbolSelector from './components/SymbolSelector'
 import MarketSummary from './components/MarketSummary'
@@ -11,8 +11,35 @@ const API = 'http://localhost:9090'
 export default function App() {
   const {
     selectedSymbol, symbols, books, bookTimes, trades, connected,
-    setSymbols, updateBook, addTrade, setConnected, initTrades, setSymbol
+    setSymbols, updateBook, addTrade, setConnected, initTrades, setSymbol, clearTrades
   } = useStore()
+
+  const [clearKey, setClearKey] = useState(0)
+
+  function collectIds(allBooks) {
+    return Object.values(allBooks).flatMap(b => [
+      ...(b.bids || []).flatMap(level => level.orderIds || []),
+      ...(b.asks || []).flatMap(level => level.orderIds || []),
+    ])
+  }
+
+  async function handleClear() {
+    try {
+      // Cancel in up to 3 passes to catch any orders added mid-cancel
+      for (let pass = 0; pass < 3; pass++) {
+        const allBooks = await fetch(`${API}/books`).then(r => r.json())
+        const ids = collectIds(allBooks)
+        if (ids.length === 0) break
+        for (const id of ids) {
+          await fetch(`${API}/orders/${id}`, { method: 'DELETE' })
+        }
+      }
+    } catch (e) {
+      console.error('Clear failed:', e)
+    }
+    clearTrades()
+    setClearKey(k => k + 1)
+  }
 
   // Initial data fetch + SSE setup
   useEffect(() => {
@@ -62,9 +89,10 @@ export default function App() {
           <span className="dot">{connected ? '●' : '○'}</span>
           {connected ? 'Live' : 'Disconnected'}
         </div>
+        <button className="btn clear-btn" onClick={handleClear}>Clear</button>
       </header>
 
-      <MarketSummary symbols={symbols} books={books} bookTimes={bookTimes} />
+      <MarketSummary symbols={symbols} books={books} trades={trades} clearKey={clearKey} />
 
       <main className="main">
         <section className="panel book-panel">

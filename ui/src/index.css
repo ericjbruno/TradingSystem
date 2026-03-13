@@ -264,6 +264,7 @@ html, body, #root {
 .submit-btn.buy  { background: var(--bid);   color: #000; }
 .submit-btn.sell { background: var(--ask);   color: #fff; }
 .cancel-btn      { background: var(--bg3);  color: var(--text); border: 1px solid var(--border); }
+.clear-btn       { background: var(--bg3);  color: var(--ask);  border: 1px solid var(--ask);    margin-left: auto; }
 .btn:hover { filter: brightness(1.15); }
 
 .form-status {
@@ -285,7 +286,7 @@ html, body, #root {
 
 .ms-header {
   display: grid;
-  grid-template-columns: 90px 110px 110px 110px 80px;
+  grid-template-columns: 90px 110px 110px 110px 120px 80px;
   gap: 8px;
   padding: 6px 12px;
   font-size: 10px;
@@ -307,7 +308,7 @@ html, body, #root {
 
 .ms-row {
   display: grid;
-  grid-template-columns: 90px 110px 110px 110px 80px;
+  grid-template-columns: 90px 110px 110px 110px 120px 80px;
   gap: 8px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
@@ -334,6 +335,11 @@ html, body, #root {
 }
 
 .ms-time { font-size: 11px; }
+
+.ms-last { display: flex; align-items: center; justify-content: flex-end; gap: 3px; }
+.ms-arrow { font-size: 9px; }
+.ms-arrow.up   { color: var(--bid); }
+.ms-arrow.down { color: var(--ask); }
 
 .ms-empty {
   padding: 16px 12px;

@@ -25,6 +25,8 @@ const useStore = create((set) => ({
     // REST returns oldest-first (deque order); reverse so newest is first
     trades: [...ts].reverse()
   }),
+
+  clearTrades: () => set({ trades: [] }),
 }))
 
 export default useStore
