@@ -40,15 +40,64 @@ responsibility:
                   std::atomic<long> counter provides thread-safe, auto-
                   incrementing order IDs.
 
+    class Order {
+        long         id;
+        bool         active;
+        double       price;
+        long         quantity;
+        std::string  symbol;
+        OrderType    type;
+        Counterparty* counterparty;   // non-owning pointer
+        static std::atomic<long> nextId;
+    public:
+        long getId() const;
+        bool isBuyOrder()  const;
+        bool isSellOrder() const;
+        void setQuantity(long qty);
+        ...
+    };
+
   OrderType       An enum whose even values are buy-side types and odd values
                   are sell-side types. isBuyOrder() and isSellOrder() exploit
                   this arithmetic convention with a single bitwise test, making
                   side classification branch-free.
 
+    enum class OrderType {
+        MARKET_BUY = 0,  MARKET_SELL = 1,
+        LIMIT_BUY  = 2,  LIMIT_SELL  = 3,
+        STOP_BUY   = 4,  STOP_SELL   = 5,
+        SPOT_BUY   = 6,  SPOT_SELL   = 7,
+        SWAP_BUY   = 8,  SWAP_SELL   = 9,
+    };
+
+    inline bool isBuyOrder(OrderType type) {
+        return static_cast<int>(type) % 2 == 0;
+    }
+
   Counterparty    Represents a trading firm. Tracks its open order IDs and
                   receives TradeNotification structs when its orders fill.
                   Counterparty objects are owned by the caller; Order holds
                   only a raw, non-owning pointer.
+
+    struct TradeNotification {
+        long        orderId;
+        double      price;
+        long        quantity;
+        bool        wasBuy;
+        std::string counterpartyName;
+    };
+
+    class Counterparty {
+        long id;
+        std::string name;
+        std::vector<long> orderIds;
+        std::vector<TradeNotification> trades;
+        static std::atomic<long> nextId;
+    public:
+        void addOrderId(long orderId);
+        void removeOrderId(long orderId);
+        void onTrade(TradeNotification notification);
+    };
 
   SubBook         The per-symbol order container. Holds two sorted maps: a
                   BidMap (std::map with std::greater comparator, so begin()
@@ -57,10 +106,41 @@ responsibility:
                   level in both maps stores a std::list<Order> in strict FIFO
                   arrival order.
 
+    // Sell (ask) map: ascending — begin() == best ask (lowest price)
+    using AskMap = std::map<double, std::list<Order>>;
+
+    // Buy (bid) map: descending — begin() == best bid (highest price)
+    using BidMap = std::map<double, std::list<Order>, std::greater<double>>;
+
+    class SubBook {
+        BidMap buyOrders;
+        AskMap sellOrders;
+    public:
+        BidMap& getBuyOrdersRef()  { return buyOrders; }
+        AskMap& getSellOrdersRef() { return sellOrders; }
+    };
+
   OrderBook       The top-level registry. Maps trading symbols to SubBooks via
                   std::unordered_map for O(1) symbol lookup, and maintains a
                   second unordered_map from order ID to OrderLocation for O(1)
                   cancellation without scanning the book.
+
+    struct OrderLocation {
+        std::list<Order>*           priceList;
+        double                      price;
+        std::list<Order>::iterator  it;
+        std::function<void(double)> eraseLevel;
+    };
+
+    class OrderBook {
+        std::unordered_map<std::string, SubBook>    books;
+        std::unordered_map<long, OrderLocation>     orderIndex;
+    public:
+        SubBook& get(const std::string& symbol);
+        bool     cancel(long orderId);
+        void     indexOrder(long orderId, OrderLocation loc);
+        void     removeFromIndex(long orderId);
+    };
 
   TradeManager    Contains all matching logic. matchSpotOrders walks the
                   opposite side of the book from the best price inward,
@@ -77,6 +157,22 @@ responsibility:
                   receives a shared_ptr<Connection> that owns a message queue,
                   a mutex, and a condition variable. publish() pushes a message
                   to every live connection and wakes their waiting threads.
+
+    class EventBus {
+    public:
+        struct Connection {
+            std::queue<std::string> queue;
+            std::mutex              mu;
+            std::condition_variable cv;
+            bool                    closed{false};
+        };
+        std::shared_ptr<Connection> subscribe();
+        void unsubscribe(std::shared_ptr<Connection> conn);
+        void publish(const std::string& sseMsg);
+    private:
+        std::vector<std::shared_ptr<Connection>> conns_;
+        std::mutex                               mu_;
+    };
 
   HTTPServer      Wraps cpp-httplib to expose the REST API and the SSE
                   /events endpoint. All OrderManager access is serialised
@@ -166,6 +262,22 @@ Cancelling an order is then four steps, each O(1):
      entry from the map.
   4. Erase the OrderLocation from the index.
 
+The full cancel() implementation:
+
+  bool OrderBook::cancel(long orderId) {
+      auto indexIt = orderIndex.find(orderId);
+      if (indexIt == orderIndex.end()) return false;
+
+      OrderLocation& location = indexIt->second;
+      location.priceList->erase(location.it);   // O(1) list erasure
+
+      if (location.priceList->empty())
+          location.eraseLevel(location.price);  // remove empty price level
+
+      orderIndex.erase(indexIt);
+      return true;
+  }
+
 The eraseLevel field is a lambda captured at insert time. Because BidMap and
 AskMap are different C++ types, a single raw pointer cannot erase from both.
 The lambda closes over the map by reference and hides the type difference
@@ -181,6 +293,15 @@ TradeManager calls EventBus::publish("event: trade\ndata: {...}\n\n"). Each
 publish call iterates every live SSE connection, pushes the message to its
 queue, and calls notify_one() on its condition variable, waking the SSE handler
 thread to flush the chunk to the browser.
+
+  void EventBus::publish(const std::string& sseMsg) {
+      std::lock_guard<std::mutex> lk(mu_);
+      for (auto& c : conns_) {
+          std::lock_guard<std::mutex> clk(c->mu);
+          c->queue.push(sseMsg);
+          c->cv.notify_one();
+      }
+  }
 
 Thread Safety
 
@@ -201,6 +322,22 @@ The journey of an order from submission to the book passes through four layers.
    named counterparty from an internal map, constructs an Order object, and
    calls OrderManager::processNewOrder() under the global mutex.
 
+     // From HTTPServer::setupRoutes()
+     svr_.Post("/orders", [this](const httplib::Request& req, httplib::Response& res) {
+         std::string symbol   = extractStr(body, "symbol");
+         double      price    = extractDouble(body, "price");
+         long        quantity = extractLong(body, "quantity");
+         std::string side     = extractStr(body, "side");
+         std::string cpName   = extractStr(body, "counterparty");
+
+         OrderType orderType = (side == "BUY") ? OrderType::SPOT_BUY
+                                               : OrderType::SPOT_SELL;
+         Order order(symbol, price, quantity, orderType, cp);
+
+         std::lock_guard<std::mutex> lk(mu_);
+         om_.processNewOrder(order);
+     });
+
 2. Matching Attempt
 
    For SPOT_BUY and SPOT_SELL orders, processNewOrder immediately calls
@@ -210,21 +347,57 @@ The journey of an order from submission to the book passes through four layers.
    If the order is fully filled, matchSpotOrders returns true and the order
    is not queued.
 
+     void OrderManager::processNewOrder(const Order& newOrder) {
+         SubBook& sb = orderBook->get(newOrder.getSymbol());
+
+         if (newOrder.getType() == OrderType::SPOT_BUY ||
+             newOrder.getType() == OrderType::SPOT_SELL) {
+             Order order = newOrder;  // mutable copy
+
+             if (tradeManager->matchSpotOrders(order, sb, *orderBook)) {
+                 publishBookUpdate(sym);
+                 return;              // fully filled — nothing left to queue
+             }
+
+             queueOrder(order, sb);  // queue the unfilled remainder
+             publishBookUpdate(sym);
+             return;
+         }
+
+         queueOrder(newOrder, sb);   // non-SPOT: queue directly
+         publishBookUpdate(sym);
+     }
+
 3. Queuing
 
    If any quantity remains after matching (or if the order type is not SPOT),
    queueOrder inserts it into the appropriate price-level list:
 
-     (*BidMap or AskMap)[price].push_back(order)   — O(log n) map insert
-                                                      or O(1) if level exists
+     void OrderManager::queueOrder(const Order& order, SubBook& sb) {
+         std::list<Order>*           priceListPtr;
+         std::function<void(double)> eraseLevel;
 
-   It then registers the order in the cancellation index:
+         if (order.isBuyOrder()) {
+             BidMap* bids = &sb.getBuyOrdersRef();
+             auto&   pl   = (*bids)[order.getPrice()]; // O(log n) or O(1) if exists
+             pl.push_back(order);
+             priceListPtr = &pl;
+             eraseLevel   = [bids](double price) { bids->erase(price); };
+         } else {
+             AskMap* asks = &sb.getSellOrdersRef();
+             auto&   pl   = (*asks)[order.getPrice()];
+             pl.push_back(order);
+             priceListPtr = &pl;
+             eraseLevel   = [asks](double price) { asks->erase(price); };
+         }
 
-     orderIndex[id] = OrderLocation{&list, price, iter, eraseLevel}
+         auto it = std::prev(priceListPtr->end());
+         orderBook->indexOrder(order.getId(),
+                               {priceListPtr, order.getPrice(), it, eraseLevel});
 
-   And notifies the counterparty:
-
-     counterparty->addOrderId(id)
+         if (Counterparty* cp = order.getCounterparty())
+             cp->addOrderId(order.getId());
+     }
 
 4. Book Update Event
 
@@ -232,6 +405,18 @@ The journey of an order from submission to the book passes through four layers.
    entire SubBook for the affected symbol to JSON and calls
    EventBus::publish(). Every connected browser receives the update within
    the SSE flush latency.
+
+     void OrderManager::publishBookUpdate(const std::string& symbol) {
+         SubBook& sb = orderBook->get(symbol);
+         std::ostringstream j;
+         j << "event: book_update\ndata: {\"symbol\":\"" << symbol
+           << "\",\"bids\":[";
+         appendPriceLevels(j, sb.getBuyOrdersRef());
+         j << "],\"asks\":[";
+         appendPriceLevels(j, sb.getSellOrdersRef());
+         j << "]}\n\n";
+         eventBus_->publish(j.str());
+     }
 
 Order Entry Sequence (no matching trade)
 
@@ -258,6 +443,19 @@ Cancellation follows a simpler path: getOrderSymbol and getOrderCounterparty
 read from the existing index entry before erasure, OrderBook::cancel removes
 the order in O(1), removeOrderId cleans up the counterparty, and another
 book_update event is published.
+
+     void OrderManager::processCancelOrder(long orderId) {
+         const std::string sym = orderBook->getOrderSymbol(orderId);
+         Counterparty* cp      = orderBook->getOrderCounterparty(orderId);
+
+         if (!orderBook->cancel(orderId)) {
+             std::cerr << "Cancel failed: order " << orderId << " not found\n";
+             return;
+         }
+
+         if (cp) cp->removeOrderId(orderId);
+         if (!sym.empty()) publishBookUpdate(sym);
+     }
 
 Order Cancellation Sequence
 
@@ -294,6 +492,10 @@ A trade occurs when a buyer's limit price is at or above a seller's limit
 price: pricesMatch(bid, ask) returns bid >= ask. This inclusive condition means
 orders at exactly equal prices always execute.
 
+  bool TradeManager::pricesMatch(double bidPrice, double askPrice) {
+      return bidPrice >= askPrice;
+  }
+
 Walk from Best Price Inward
 
 For an incoming SPOT_BUY:
@@ -305,6 +507,46 @@ For an incoming SPOT_BUY:
 
 For an incoming SPOT_SELL the logic is symmetric: BidMap is iterated from
 begin() (highest bid) forward.
+
+The outer loop for the incoming buy side:
+
+  AskMap& asks = sb.getSellOrdersRef();
+  auto mapIt   = asks.begin();
+
+  while (mapIt != asks.end() && incoming.getQuantity() > 0) {
+      double askPrice = mapIt->first;
+      if (!pricesMatch(incoming.getPrice(), askPrice)) break;
+
+      std::list<Order>& level   = mapIt->second;
+      auto              orderIt = level.begin();
+
+      while (orderIt != level.end() && incoming.getQuantity() > 0) {
+          Order& standing = *orderIt;
+          long   fillQty  = std::min(incoming.getQuantity(), standing.getQuantity());
+
+          Trade trade{ incoming.getSymbol(), askPrice, fillQty,
+                       incoming.getId(), standing.getId(),
+                       incoming.getCounterparty(), standing.getCounterparty() };
+          logAndNotify(trade);
+
+          incoming.setQuantity(incoming.getQuantity() - fillQty);
+
+          if (fillQty == standing.getQuantity()) {
+              long          standingId = standing.getId();
+              Counterparty* cp         = standing.getCounterparty();
+              orderIt = level.erase(orderIt);   // advance before erase
+              book.removeFromIndex(standingId);
+              if (cp) cp->removeOrderId(standingId);
+          } else {
+              standing.setQuantity(standing.getQuantity() - fillQty);
+              ++orderIt;
+          }
+      }
+
+      auto nextMapIt = std::next(mapIt);
+      if (level.empty()) asks.erase(mapIt);
+      mapIt = nextMapIt;
+  }
 
 Execution Price
 
@@ -335,6 +577,45 @@ exits only when it reaches zero or when no more crossing prices exist.
 The return value of matchSpotOrders is simply incoming.getQuantity() == 0.
 If true, the caller does not queue the order. If false, the reduced-quantity
 remainder is queued at its original limit price.
+
+Logging and Notification
+
+After each fill, logAndNotify records the trade in a ring buffer, publishes
+an SSE trade event to all browsers, and calls onTrade() on both counterparties:
+
+  void TradeManager::logAndNotify(const Trade& trade) {
+      // Print to stdout
+      std::cout << "[TRADE] " << trade.symbol
+                << "  qty="   << trade.quantity
+                << "  @ "     << trade.price
+                << "  | Buy#" << trade.buyOrderId
+                << " ("       << trade.buyer->getName() << ")"
+                << "  Sell#"  << trade.sellOrderId
+                << " ("       << trade.seller->getName() << ")\n";
+
+      // Ring buffer: newest at back, capped at 100
+      recentTrades_.push_back(trade);
+      if (recentTrades_.size() > 100) recentTrades_.pop_front();
+
+      // Publish SSE event
+      if (eventBus_) {
+          std::ostringstream j;
+          j << "event: trade\ndata: "
+            << "{\"symbol\":\""    << trade.symbol   << "\""
+            << ",\"price\":"       << trade.price
+            << ",\"quantity\":"    << trade.quantity
+            << ",\"buyer\":\""     << trade.buyer->getName()  << "\""
+            << ",\"seller\":\""    << trade.seller->getName() << "\""
+            << "}\n\n";
+          eventBus_->publish(j.str());
+      }
+
+      // Notify each counterparty
+      trade.buyer->onTrade({trade.buyOrderId,  trade.price, trade.quantity, true,
+                            trade.seller->getName()});
+      trade.seller->onTrade({trade.sellOrderId, trade.price, trade.quantity, false,
+                             trade.buyer->getName()});
+  }
 
 Trade Execution Sequence (incoming buy matches resting sell)
 
@@ -391,6 +672,18 @@ events are routed to the Zustand store:
   book_update → updateBook(parsed)  — updates books[symbol] and bookTimes[symbol]
   trade       → addTrade(parsed)    — prepends to trades[], capped at 100
 
+  // From App.jsx
+  const es = new EventSource(`http://${window.location.hostname}:9090/events`)
+  es.onopen  = () => setConnected(true)
+  es.onerror = () => setConnected(false)
+
+  es.addEventListener('trade',       e => addTrade(JSON.parse(e.data)))
+  es.addEventListener('book_update', e => updateBook(JSON.parse(e.data)))
+
+The API base URL is derived from window.location.hostname so the UI works both
+locally (localhost:9090) and from other machines on the network without any
+configuration change.
+
 All child components receive data as props from App rather than subscribing to
 the store independently. This ensures every component re-renders in the same
 React cycle when an event arrives, preventing visual inconsistency.
@@ -412,15 +705,86 @@ CSS handles the visual: .ms-cell.flash sets color to gold with transition: none
 (instant appearance), and removing the class restores the default grey with a
 0.4s ease transition (smooth fade).
 
+  function triggerFlash(key) {
+      if (timersRef.current[key]) clearTimeout(timersRef.current[key])
+      setFlashing(f => ({ ...f, [key]: true }))
+      timersRef.current[key] = setTimeout(() => {
+          setFlashing(f => { const n = { ...f }; delete n[key]; return n })
+          delete timersRef.current[key]
+      }, 2000)
+  }
+
 The direction arrow next to the last trade price is computed by comparing the
 current last trade price against prevLastTrade (the price from the render
 before the current one). This value is stored separately from lastTrade in
 prevRef so that the render always has access to the prior price even after the
 useEffect has updated lastTrade to the new value.
 
-The API base URL is derived from window.location.hostname so the UI works both
-locally (localhost:9090) and from other machines on the network without any
-configuration change.
+  // Inside the trades useEffect
+  useEffect(() => {
+      const latest = buildLastTrades(trades)
+      for (const sym of symbols) {
+          const price = latest[sym]
+          const prev  = prevRef.current[sym] || {}
+          if (price !== undefined && price !== prev.lastTrade) {
+              triggerFlash(`${sym}.last`)
+              // Save old price before overwriting, so render can compare them
+              prevRef.current[sym] = {
+                  ...prevRef.current[sym],
+                  prevLastTrade: prev.lastTrade,
+                  lastTrade: price,
+              }
+              setTradeTimes(t => ({ ...t, [sym]: Date.now() }))
+          }
+      }
+  }, [trades, symbols])
+
+  // In render: arrow uses prevLastTrade, not lastTrade
+  const prevLast = prevRef.current[sym]?.prevLastTrade
+  let arrow = null
+  if (lastPrice != null && prevLast != null && lastPrice !== prevLast) {
+      arrow = lastPrice > prevLast
+          ? <span className="ms-arrow up">▲</span>
+          : <span className="ms-arrow down">▼</span>
+  }
+
+SSE Handler
+
+On the C++ side, the /events route uses cpp-httplib's chunked content provider.
+The lambda blocks on the connection's condition variable for up to 20 seconds,
+draining the queue whenever a publish() wakes it:
+
+  svr_.Get("/events", [this](const httplib::Request&, httplib::Response& res) {
+      auto conn = bus_.subscribe();
+      res.set_chunked_content_provider(
+          "text/event-stream",
+          [conn](size_t, httplib::DataSink& sink) -> bool {
+              std::unique_lock<std::mutex> lk(conn->mu);
+              conn->cv.wait_for(lk, std::chrono::seconds(20), [&] {
+                  return !conn->queue.empty() || conn->closed;
+              });
+
+              if (conn->closed) { sink.done(); return false; }
+
+              if (conn->queue.empty()) {
+                  // Keepalive comment; prevents proxy timeout
+                  const std::string ka = ": keepalive\n\n";
+                  return sink.write(ka.data(), ka.size());
+              }
+
+              while (!conn->queue.empty()) {
+                  const std::string& msg = conn->queue.front();
+                  if (!sink.write(msg.data(), msg.size())) {
+                      conn->closed = true;
+                      return false;
+                  }
+                  conn->queue.pop();
+              }
+              return true;
+          },
+          [this, conn](bool) { bus_.unsubscribe(conn); }
+      );
+  });
 
 Clear Button
 
@@ -432,6 +796,144 @@ are made to catch any orders added during a prior pass. After cancellation it
 clears the trade history from the Zustand store and increments a clearKey prop
 passed to MarketSummary, which resets its internal trade-time and previous-
 price tracking state.
+
+  async function handleClear() {
+      for (let pass = 0; pass < 3; pass++) {
+          const allBooks = await fetch(`${API}/books`).then(r => r.json())
+          const ids = Object.values(allBooks).flatMap(b => [
+              ...(b.bids || []).flatMap(level => level.orderIds || []),
+              ...(b.asks || []).flatMap(level => level.orderIds || []),
+          ])
+          if (ids.length === 0) break
+          for (const id of ids) {
+              await fetch(`${API}/orders/${id}`, { method: 'DELETE' })
+          }
+      }
+      clearTrades()
+      setClearKey(k => k + 1)
+  }
+
+
+Scripts
+-------
+
+Five shell scripts provide ready-made ways to start, exercise, and demonstrate
+the system without writing any code.
+
+run_server.sh
+
+  Compiles all C++ source files with g++ -std=c++17 and immediately runs
+  the resulting binary. A single command builds and starts the server.
+
+  #!/usr/bin/env bash
+  set -e
+  g++ -std=c++17 -fdiagnostics-color=always -g \
+      Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
+      MarketPrice.cpp MarketManager.cpp TradeManager.cpp \
+      EventBus.cpp HTTPServer.cpp TradingSystem.cpp \
+      -lpthread -o TradingSystem
+  ./TradingSystem
+
+run_ui.sh
+
+  Installs npm dependencies if node_modules is absent (first-run bootstrap),
+  then starts the Vite development server bound to all network interfaces so
+  the UI is reachable from other machines on the LAN.
+
+  #!/usr/bin/env bash
+  set -e
+  cd "$(dirname "$0")/ui"
+  if [ ! -d node_modules ]; then
+      npm install
+  fi
+  npm run dev
+
+demo_trade.sh
+
+  Demonstrates the simplest possible trade: one buyer, one seller, equal price,
+  equal quantity. Goldman Sachs bids 1,000,000 EUR/USD @ 1.08500 and rests in
+  the book. Three seconds later JP Morgan offers at the same price, the bid and
+  ask cross, and the matching engine executes the fill. The script prints the
+  JSON response for each order and reminds the user to check GET /trades or the
+  UI for confirmation.
+
+  #!/usr/bin/env bash
+  API="http://localhost:9090"
+
+  echo "Step 1: Goldman Sachs BUY 1,000,000 EUR/USD @ 1.08500"
+  curl -s -X POST "$API/orders" \
+    -H "Content-Type: application/json" \
+    -d '{"symbol":"EUR/USD","price":1.08500,"quantity":1000000,
+         "side":"BUY","counterparty":"Goldman Sachs"}'
+
+  sleep 3
+
+  echo "Step 2: JP Morgan SELL 1,000,000 EUR/USD @ 1.08500"
+  curl -s -X POST "$API/orders" \
+    -H "Content-Type: application/json" \
+    -d '{"symbol":"EUR/USD","price":1.08500,"quantity":1000000,
+         "side":"SELL","counterparty":"JP Morgan"}'
+
+demo_rising_price.sh
+
+  Demonstrates two sequential trades with an increasing last price, triggering
+  the up-arrow (▲) in the MarketSummary Last Trade column. Trade 1 executes
+  EUR/USD @ 1.08450; three seconds later Trade 2 executes @ 1.08520, a higher
+  price. The UI's direction arrow updates from neutral to ▲ after the second
+  fill. The script uses a reusable submit() helper to keep the curl invocations
+  concise.
+
+  #!/usr/bin/env bash
+  API="http://localhost:9090"
+
+  submit() {
+      local label="$1" side="$2" price="$3" cp="$4"
+      curl -s -X POST "$API/orders" \
+          -H "Content-Type: application/json" \
+          -d "{\"symbol\":\"EUR/USD\",\"price\":$price,
+               \"quantity\":1000000,\"side\":\"$side\",
+               \"counterparty\":\"$cp\"}"
+  }
+
+  # Trade 1 @ 1.08450
+  submit "Goldman Sachs BUY"  "BUY"  1.08450 "Goldman Sachs"
+  sleep 3
+  submit "JP Morgan SELL"     "SELL" 1.08450 "JP Morgan"
+
+  sleep 3
+
+  # Trade 2 @ 1.08520 (higher — expect ▲ arrow in UI)
+  submit "Deutsche Bank BUY" "BUY"  1.08520 "Deutsche Bank"
+  sleep 3
+  submit "JP Morgan SELL"    "SELL" 1.08520 "JP Morgan"
+
+run_orders_loop.sh
+
+  The stress-test script. Reads forex_orders.csv (100 orders across 25 currency
+  pairs), submits each one to the REST API with a 50 ms delay between orders,
+  cycles the counterparty across Goldman Sachs, JP Morgan, and Deutsche Bank,
+  then cancels every open order and starts over. It runs indefinitely until
+  interrupted with Ctrl-C.
+
+  The cancel step uses jq to parse GET /books and extract all order IDs from
+  every price level on both sides of every symbol:
+
+  cancel_all_open_orders() {
+      local ids
+      ids=$(curl -s "$API/books" | jq -r '
+          to_entries[].value
+          | (.bids[], .asks[])
+          | .orderIds[]
+      ')
+      while IFS= read -r id; do
+          curl -s -X DELETE "$API/orders/$id" > /dev/null
+      done <<< "$ids"
+  }
+
+  Running this script while the UI is open provides a live demonstration of
+  the order book updating in real time — bids and asks populating across
+  multiple currency pairs, trades executing when prices cross, and the book
+  clearing between loops.
 
 
 Core Lessons
@@ -448,8 +950,16 @@ price level from either without knowing which one it belongs to. The solution
 is to capture the map erase operation at insert time as a
 std::function<void(double)> lambda:
 
-  std::function<void(double)> eraseLevel = [&bids](double p) {
-      bids.erase(p);
+  // Inside queueOrder, for a buy order:
+  BidMap* bids = &sb.getBuyOrdersRef();
+  std::function<void(double)> eraseLevel = [bids](double p) {
+      bids->erase(p);
+  };
+
+  // Inside queueOrder, for a sell order:
+  AskMap* asks = &sb.getSellOrdersRef();
+  std::function<void(double)> eraseLevel = [asks](double p) {
+      asks->erase(p);
   };
 
 The lambda closes over the concrete map, hiding its type behind the uniform
@@ -470,6 +980,11 @@ Atomic ID Generation
 Order and Counterparty each use a static std::atomic<long> counter incremented
 with fetch_add(1, std::memory_order_relaxed). This gives unique, monotonically
 increasing IDs across all instances with no locking.
+
+  std::atomic<long> Order::nextId{1};
+
+  // In Order constructor:
+  this->id = nextId.fetch_add(1, std::memory_order_relaxed);
 
 Condition Variables for SSE Back-Pressure
 
@@ -506,6 +1021,35 @@ OrderBook::get(symbol) is a one-liner:
 std::unordered_map::operator[] default-constructs the value if the key is
 absent. A SubBook default-constructs to empty BidMap and AskMap. No explicit
 "create if absent" logic is needed anywhere.
+
+Generic JSON Serialisation with a C++17 Lambda
+
+OrderManager serialises both BidMap and AskMap through a single generic lambda
+that works with either map type via template argument deduction:
+
+  static auto appendPriceLevels = [](std::ostringstream& j, auto& map) {
+      bool first = true;
+      for (const auto& [price, orders] : map) {
+          if (!first) j << ",";
+          first = false;
+          long total = 0;
+          std::string ids = "[";
+          bool fst = true;
+          for (const auto& o : orders) {
+              total += o.getQuantity();
+              if (!fst) ids += ",";
+              fst = false;
+              ids += std::to_string(o.getId());
+          }
+          ids += "]";
+          j << "{\"price\":"    << price
+            << ",\"quantity\":" << total
+            << ",\"orderIds\":" << ids << "}";
+      }
+  };
+
+The auto& map parameter accepts either map type at compile time, eliminating
+the need for a separate serialisation function per side of the book.
 
 
 Conclusion
