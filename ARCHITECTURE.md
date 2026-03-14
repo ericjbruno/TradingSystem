@@ -509,6 +509,112 @@ HTTPServer SSE handler
 
 ---
 
+## Sequence Diagrams
+
+### Order Entry (no immediate match)
+
+```mermaid
+sequenceDiagram
+    participant UI as React UI
+    participant HTTP as HTTPServer
+    participant OM as OrderManager
+    participant TM as TradeManager
+    participant OB as OrderBook
+    participant CP as Counterparty
+    participant EB as EventBus
+
+    UI->>HTTP: POST /orders {symbol, price, qty, side, counterparty}
+    HTTP->>OM: processNewOrder(order)
+    OM->>OB: get(symbol) → SubBook (lazy init)
+    OM->>TM: matchSpotOrders(order, subBook, orderBook)
+    Note over TM: No crossing price found
+    TM-->>OM: false — order not fully filled
+    OM->>OB: BidMap/AskMap[price].push_back(order)
+    OM->>OB: indexOrder(id, OrderLocation)
+    OM->>CP: addOrderId(id)
+    OM->>EB: publishBookUpdate(symbol)
+    EB-->>UI: event: book_update {bids, asks}
+    HTTP-->>UI: {success: true, orderId: N}
+```
+
+### Trade Execution (incoming order crosses the book)
+
+```mermaid
+sequenceDiagram
+    participant UI as React UI
+    participant HTTP as HTTPServer
+    participant OM as OrderManager
+    participant TM as TradeManager
+    participant OB as OrderBook
+    participant CPB as Buyer Counterparty
+    participant CPS as Seller Counterparty
+    participant EB as EventBus
+
+    UI->>HTTP: POST /orders (SPOT_BUY price ≥ best ask)
+    HTTP->>OM: processNewOrder(order)
+    OM->>OB: get(symbol) → SubBook
+    OM->>TM: matchSpotOrders(incoming, subBook, orderBook)
+
+    loop Each matching price level, FIFO within level
+        TM->>TM: pricesMatch(bid, ask) → true
+        TM->>TM: fillQty = min(incoming.qty, standing.qty)
+        TM->>EB: publish(event: trade {symbol, price, qty, …})
+        EB-->>UI: event: trade
+        TM->>CPB: onTrade(TradeNotification — buyer side)
+        TM->>CPS: onTrade(TradeNotification — seller side)
+        alt Standing order fully consumed
+            TM->>OB: removeFromIndex(standingId)
+            TM->>CPS: removeOrderId(standingId)
+            Note over TM,OB: list::erase O(1); level erased if empty
+        else Standing order partially consumed
+            TM->>TM: standing.setQuantity(remaining)
+        end
+    end
+
+    TM-->>OM: true (incoming fully filled) or false (remainder to queue)
+    alt Remainder to queue
+        OM->>OB: BidMap/AskMap[price].push_back(remainder)
+        OM->>OB: indexOrder(id, OrderLocation)
+        OM->>CPB: addOrderId(id)
+    end
+    OM->>EB: publishBookUpdate(symbol)
+    EB-->>UI: event: book_update {bids, asks}
+    HTTP-->>UI: {success: true, orderId: N}
+```
+
+### Order Cancellation
+
+```mermaid
+sequenceDiagram
+    participant UI as React UI
+    participant HTTP as HTTPServer
+    participant OM as OrderManager
+    participant OB as OrderBook
+    participant CP as Counterparty
+    participant EB as EventBus
+
+    UI->>HTTP: DELETE /orders/:id
+    HTTP->>OM: processCancelOrder(id)
+    OM->>OB: getOrderSymbol(id)
+    OB-->>OM: symbol (read from Order node before erasure)
+    OM->>OB: getOrderCounterparty(id)
+    OB-->>OM: Counterparty* (must be called before cancel)
+    OM->>OB: cancel(id)
+    OB->>OB: orderIndex.find(id) → OrderLocation O(1)
+    OB->>OB: list::erase(it) O(1)
+    alt Price level now empty
+        OB->>OB: eraseLevel(price) — removes BidMap/AskMap entry
+    end
+    OB->>OB: orderIndex.erase(id)
+    OB-->>OM: true (cancelled)
+    OM->>CP: removeOrderId(id)
+    OM->>EB: publishBookUpdate(symbol)
+    EB-->>UI: event: book_update {bids, asks}
+    HTTP-->>UI: {success: true}
+```
+
+---
+
 ## Design Patterns
 
 | Pattern | Component | Purpose |

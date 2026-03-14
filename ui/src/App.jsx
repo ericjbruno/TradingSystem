@@ -6,7 +6,7 @@ import OrderBook from './components/OrderBook'
 import TradeFeed from './components/TradeFeed'
 import OrderForm from './components/OrderForm'
 
-const API = 'http://localhost:9090'
+const API = `http://${window.location.hostname}:9090`
 
 export default function App() {
   const {

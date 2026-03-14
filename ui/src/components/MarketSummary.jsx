@@ -70,7 +70,13 @@ export default function MarketSummary({ symbols, books, trades, clearKey }) {
       const prev  = prevRef.current[sym] || {}
       if (price !== undefined && price !== prev.lastTrade) {
         triggerFlash(`${sym}.last`)
-        prevRef.current[sym] = { ...prevRef.current[sym], lastTrade: price }
+        // Save old price as prevLastTrade BEFORE overwriting lastTrade,
+        // so the render can compare them even after this effect has run.
+        prevRef.current[sym] = {
+          ...prevRef.current[sym],
+          prevLastTrade: prev.lastTrade,
+          lastTrade: price,
+        }
         setTradeTimes(t => ({ ...t, [sym]: Date.now() }))
       }
     }
@@ -81,7 +87,7 @@ export default function MarketSummary({ symbols, books, trades, clearKey }) {
     if (clearKey === 0) return
     setTradeTimes({})
     for (const sym of Object.keys(prevRef.current)) {
-      prevRef.current[sym] = { ...prevRef.current[sym], lastTrade: undefined }
+      prevRef.current[sym] = { ...prevRef.current[sym], lastTrade: undefined, prevLastTrade: undefined }
     }
   }, [clearKey])
 
@@ -110,7 +116,7 @@ export default function MarketSummary({ symbols, books, trades, clearKey }) {
           const ask       = book?.asks?.[0]?.price
           const bidQty    = book?.bids?.[0]?.quantity
           const lastPrice = lastTrades[sym]
-          const prevLast  = prevRef.current[sym]?.lastTrade
+          const prevLast  = prevRef.current[sym]?.prevLastTrade
 
           let arrow = null
           if (lastPrice != null && prevLast != null && lastPrice !== prevLast) {
