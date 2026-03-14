@@ -8,30 +8,83 @@
 ## Table of Contents
 
 1. [Introduction](#introduction)
-2. [Structure](#structure)
-3. [Architecture](#architecture)
-4. [Order Entry](#order-entry)
-5. [Trading Engine](#trading-engine)
-6. [User Interface](#user-interface)
-7. [Scripts](#scripts)
-8. [Core Lessons](#core-lessons)
-9. [Conclusion](#conclusion)
+2. [Features](#features)
+3. [Structure](#structure)
+4. [Architecture](#architecture)
+5. [Order Entry](#order-entry)
+6. [Trading Engine](#trading-engine)
+7. [User Interface](#user-interface)
+8. [Scripts](#scripts)
+9. [Input Format](#input-format)
+10. [Testing](#testing)
+11. [Current Status](#current-status)
+12. [Core Lessons](#core-lessons)
+13. [Conclusion](#conclusion)
 
 ---
 
 ## Introduction
 
-**TradingSystem** is a fully functional, in-memory foreign exchange order matching engine written in modern C++17. It accepts buy and sell orders for currency pairs, maintains a live order book with strict price-time priority, executes SPOT trades automatically when bid and ask prices cross, and delivers real-time notifications to connected web clients via Server-Sent Events (SSE).
+**TradingSystem** is a fully functional, in-memory foreign exchange order matching engine written in modern C++17. It reads forex orders from a CSV file to seed the initial book state, then serves a REST API and SSE stream so a React UI can submit new orders, cancel existing ones, and display the live order book and trade feed in real time.
 
-The system exposes a REST API over HTTP so that orders can be submitted and cancelled programmatically or through its companion React UI. When a trade executes, both counterparties are notified immediately, the fill is recorded in a recent-trade ring buffer, and every connected browser receives a live update within milliseconds — all without polling.
+The system accepts buy and sell orders for currency pairs, maintains a live order book with strict price-time priority, executes SPOT trades automatically when bid and ask prices cross, and delivers real-time notifications to connected web clients via Server-Sent Events (SSE). When a trade executes, both counterparties are notified immediately, the fill is recorded in a recent-trade ring buffer, and every connected browser receives a live update within milliseconds — all without polling.
 
-The project was built with **no external C++ dependencies** beyond a single-header HTTP library. The matching engine, order book, event bus, and HTTP server are all hand-coded in standard C++. The React front-end uses Vite, Zustand for state management, and plain CSS — no UI framework.
+The project is designed around a clean layered architecture — presentation, business logic, and data storage — with **no external C++ dependencies** beyond a single-header HTTP library. The matching engine, order book, event bus, and HTTP server are all hand-coded in standard C++. The React front-end uses Vite, Zustand for state management, and plain CSS — no UI framework.
+
+---
+
+## Features
+
+- **SPOT matching engine** — incoming SPOT orders are matched against the opposite side before queuing; supports partial fills, multi-level sweeps, and counterparty fill notifications
+- **Price-time priority** — bids sorted highest-first (`BidMap`), asks sorted lowest-first (`AskMap`); `begin()` always returns the best price on both sides in O(1)
+- **Per-symbol SubBook** — `BidMap` (`std::map` with `std::greater`) and `AskMap` (`std::map` default ascending) give each symbol an independent, correctly-ordered book
+- **O(1) cancellation** — `OrderLocation` stores a `std::list` iterator and a type-erased `eraseLevel` lambda, enabling stable O(1) removal regardless of map type
+- **Counterparty tracking** — each order carries a non-owning pointer to its counterparty; counterparties maintain a live list of open order IDs and a fill history (`vector<TradeNotification>`)
+- **Trade logging** — every fill is printed to stdout with symbol, quantity, price, and both sides' names and order IDs
+- **REST API** — `HTTPServer` (cpp-httplib) exposes endpoints to submit/cancel orders and query the book and trade history
+- **Real-time SSE** — `EventBus` pub/sub pushes `trade` and `book_update` events to all connected clients immediately after each fill or order change
+- **React UI** — dark terminal-style interface showing a live bid/ask ladder, scrolling trade feed, market summary with last-trade direction arrows, and order entry form; built with Vite + Zustand
+- All 10 order types (Market, Limit, Stop, Spot, Swap × Buy/Sell) route correctly using the even/odd enum convention
+- Lazy-initialized order book — SubBooks are created on demand per symbol
+- 167-test suite (12 sections) covering routing, price priority, FIFO ordering, cancellation, counterparty tracking, SPOT matching, trade pricing, cascade fills, notification details, and price boundary conditions
 
 ---
 
 ## Structure
 
 The project is split into three layers: a C++ backend, a React frontend, and a set of shell scripts and data files for running and testing the system.
+
+### File Tree
+
+```
+TradingSystem/
+├── TradingSystem.cpp      # Entry point — CSV parser, order factory, printOrderBook(), HTTP server startup
+├── Counterparty.cpp / .h  # Counterparty identity, open-order tracking, TradeNotification
+├── Order.cpp / .h         # Order value object with auto-increment ID and counterparty ref
+├── OrderType.h            # Order type enum (even=buy, odd=sell)
+├── OrderBook.cpp / .h     # Central registry: symbol→SubBook map + OrderLocation cancel index
+├── SubBook.cpp / .h       # BidMap and AskMap type aliases + SubBook container
+├── OrderManager.cpp / .h  # Order lifecycle — matching, queuing, cancellation, book-update SSE events
+├── TradeManager.cpp / .h  # Matching engine, fill logging, trade SSE events, recent trade history
+├── EventBus.cpp / .h      # Thread-safe pub/sub for SSE streaming
+├── HTTPServer.cpp / .h    # REST API + SSE /events endpoint (cpp-httplib)
+├── httplib.h              # cpp-httplib single-header HTTP library (third-party)
+├── MarketPrice.cpp / .h   # Market price value object
+├── MarketManager.cpp / .h # Market data stub (future integration)
+├── tests.cpp              # Test suite (167 tests across 12 sections)
+├── forex_orders.csv       # 100 sample forex orders; 24 result in trades
+├── run_server.sh          # Build C++ binary and start HTTP server on :9090
+├── run_ui.sh              # Install npm deps (if needed) and start Vite dev server on :5173
+├── demo_trade.sh          # Submit a single bid/offer pair resulting in a trade
+├── demo_rising_price.sh   # Submit two trades at rising prices to show ▲ direction arrow
+├── run_orders_loop.sh     # Stress-test loop: submit all CSV orders, cancel, repeat
+├── ui/                    # React UI (Vite + Zustand)
+│   ├── src/App.jsx        # Bootstrap, SSE setup, layout
+│   ├── src/store/         # Zustand state (books, trades, symbols, connected)
+│   └── src/components/    # OrderBook ladder, TradeFeed, OrderForm, MarketSummary, SymbolSelector
+├── ARCHITECTURE.md        # Detailed architecture documentation with Mermaid sequence diagrams
+└── DESCRIPTION.md         # This file
+```
 
 ### C++ Backend
 
@@ -77,6 +130,21 @@ inline bool isBuyOrder(OrderType type) {
     return static_cast<int>(type) % 2 == 0;
 }
 ```
+
+Only `SPOT_BUY` and `SPOT_SELL` are currently matched against the opposite side. All other types are queued immediately without matching.
+
+| Value | Type | Side | Matching |
+|---|---|---|---|
+| 0 | `MARKET_BUY` | Buy | queued only |
+| 1 | `MARKET_SELL` | Sell | queued only |
+| 2 | `LIMIT_BUY` | Buy | queued only |
+| 3 | `LIMIT_SELL` | Sell | queued only |
+| 4 | `STOP_BUY` | Buy | queued only |
+| 5 | `STOP_SELL` | Sell | queued only |
+| **6** | **`SPOT_BUY`** | **Buy** | **matched + queued** |
+| **7** | **`SPOT_SELL`** | **Sell** | **matched + queued** |
+| 8 | `SWAP_BUY` | Buy | queued only |
+| 9 | `SWAP_SELL` | Sell | queued only |
 
 #### `Counterparty`
 
@@ -217,6 +285,48 @@ The UI is a single-page React application built with Vite:
 
 The central design decision is the **separation of the order book data structure from the matching logic**. The book exists purely to store and retrieve orders efficiently; the matching engine operates on it from the outside.
 
+### Layers
+
+```
+┌─────────────────────────────────────────┐
+│  TradingSystem.cpp                      │  Presentation
+│  CSV parser · Order factory             │
+│  printOrderBook() ASCII display         │
+└────────────────────┬────────────────────┘
+                     │
+┌────────────────────▼────────────────────┐
+│  OrderManager                           │  Business Logic
+│  processNewOrder() · cancel()           │
+│  ┌─────────────────────────────────┐    │
+│  │  TradeManager                   │    │
+│  │  matchSpotOrders()              │    │
+│  │  logAndNotify()  pricesMatch()  │    │
+│  └─────────────────────────────────┘    │
+│  MarketManager (stub)                   │
+└────────────────────┬────────────────────┘
+                     │
+┌────────────────────▼────────────────────┐
+│  OrderBook                              │  Data Storage
+│  SubBook per symbol (BidMap + AskMap)   │
+└─────────────────────────────────────────┘
+```
+
+### OrderBook and SubBook Structure
+
+```
+OrderBook
+│
+├── books: unordered_map<string, SubBook>          O(1) lookup
+│   ├── "EUR/USD" ──► SubBook
+│   │                 ├── buyOrders  (BidMap — descending, begin()=best bid)
+│   │                 └── sellOrders (AskMap — ascending,  begin()=best ask)
+│   └── ...
+│
+└── orderIndex: unordered_map<long, OrderLocation>  O(1) cancel
+    ├── id=1  ──► { list<Order>*, price=1.0842, iterator, eraseLevel }
+    └── id=26 ──► { list<Order>*, price=1.0842, iterator, eraseLevel }
+```
+
 ### Order Book Data Structures
 
 Each symbol has its own `SubBook` containing two sorted maps:
@@ -229,6 +339,23 @@ AskMap — std::map<double, std::list<Order>>
 Using `std::greater` for bids means the map's `begin()` iterator always points to the **highest bid**. The `AskMap`'s `begin()` always points to the **lowest ask**. In both cases the best price is available in O(1) without any search or reverse iteration.
 
 Within each price level, orders are stored in a `std::list<Order>`. `std::list` provides O(1) insertion at the back (preserving arrival order) and, critically, O(1) erasure of any node given its iterator — without invalidating any other iterator in the list. This property is essential for cancellation.
+
+### Price Level Structure
+
+Each map entry holds a `std::list<Order>` in strict FIFO arrival order:
+
+```
+EUR/USD  buyOrders  (BidMap — highest price first)
+──────────────────────────────────────────────────
+ 1.0856  │  [ Order{id=76, qty=9912} ]           ← begin() = best bid
+ 1.0842  │  [ Order{id=1,  qty=9847} ─ Order{id=26, qty=10123} ]
+ 1.0835  │  [ Order{id=51, qty=10789} ]
+
+EUR/USD  sellOrders  (AskMap — lowest price first)
+──────────────────────────────────────────────────
+ 1.0863  │  [ Order{id=52, qty=11045} ]           ← begin() = best ask
+ 1.0870  │  [ Order{id=77, qty=8834} ]
+```
 
 ### O(1) Cancellation via `OrderLocation`
 
@@ -470,6 +597,22 @@ bool TradeManager::pricesMatch(double bidPrice, double askPrice) {
 | `SPOT_SELL` | `BidMap` (buys) | `begin()` = highest bid | best bid < ask limit |
 
 Within each price level, orders fill in strict **FIFO order** — the oldest resting order fills first.
+
+Example matching flow for an incoming buy:
+
+```
+processNewOrder(SPOT_BUY, price=1.0870, qty=500)
+        │
+        ▼
+matchSpotOrders(incoming, sb, book)
+        │
+        ├── asks.begin() → price=1.0863  (1.0870 >= 1.0863 ✓ cross)
+        │     fillQty = min(500, 11045) = 500
+        │     logAndNotify(Trade{qty=500, @1.0863, ...})
+        │     incoming.qty = 0  →  ask qty reduced to 10545
+        │
+        └── incoming.qty == 0 → fully filled, do not queue
+```
 
 The outer matching loop for an incoming buy:
 
@@ -759,9 +902,9 @@ async function handleClear() {
 
 Five shell scripts provide ready-made ways to start, exercise, and demonstrate the system.
 
-### `run_server.sh`
+### `run_server.sh` — Build & Start
 
-Compiles all C++ source files with `g++ -std=c++17` and immediately runs the resulting binary. A single command builds and starts the server.
+Compiles all C++ source files with `g++ -std=c++17` and immediately runs the resulting binary. A single command builds and starts the server on port 9090.
 
 ```bash
 #!/usr/bin/env bash
@@ -774,9 +917,34 @@ g++ -std=c++17 -fdiagnostics-color=always -g \
 ./TradingSystem
 ```
 
-### `run_ui.sh`
+**Expected server output (excerpt):**
 
-Installs npm dependencies if `node_modules` is absent (first-run bootstrap), then starts the Vite development server bound to all network interfaces so the UI is reachable from other machines on the LAN.
+```
+Processed order #1: BUY 9847 EUR/USD @ 1.0842  [Goldman Sachs]
+[TRADE] EUR/USD  qty=500  @ 1.0842  | Buy#3 (Deutsche Bank)  Sell#1 (Goldman Sachs)
+...
+Total orders processed: 100
+
+================================================================
+                         ORDER BOOK
+================================================================
+
+  EUR/USD
+  SELL (Ask)
+      1.0849      9,912    [#76]  <- best ask
+      1.0856     10,123    [#26]
+  ................................................................
+  BUY  (Bid)
+      1.0842      9,847    [#1]   <- best bid
+      1.0835     10,789    [#51]
+  ================================================================
+
+HTTP server listening on http://localhost:9090
+```
+
+### `run_ui.sh` — Start Frontend
+
+Installs npm dependencies if `node_modules` is absent (first-run bootstrap), then starts the Vite development server. The UI is accessible locally at `http://localhost:5173` and from other machines on the LAN at `http://<host-ip>:5173`.
 
 ```bash
 #!/usr/bin/env bash
@@ -786,6 +954,17 @@ if [ ! -d node_modules ]; then
     npm install
 fi
 npm run dev
+```
+
+### Quick Start
+
+```bash
+# Terminal 1 — build C++ and start HTTP server on :9090
+./run_server.sh
+
+# Terminal 2 — start React dev server on :5173
+./run_ui.sh
+# Open http://localhost:5173
 ```
 
 ### `demo_trade.sh`
@@ -862,6 +1041,75 @@ cancel_all_open_orders() {
 ```
 
 Running this script while the UI is open provides a live demonstration of the order book updating in real time — bids and asks populating across multiple currency pairs, trades executing when prices cross, and the book clearing between loops.
+
+---
+
+## Input Format
+
+Orders are read from `forex_orders.csv` on startup to seed the initial book state:
+
+```csv
+Symbol,Price,Quantity,Side
+EUR/USD,1.0842,9847,BUY
+GBP/USD,1.2634,10523,SELL
+USD/JPY,149.82,5000,BUY
+```
+
+The CSV contains 100 sample orders, 24 of which result in SPOT trades when processed in order. The same format is accepted by `run_orders_loop.sh` for the stress-test loop.
+
+### Supported Currency Pairs
+
+Any combination of: EUR, GBP, USD, JPY, CHF, AUD, CAD, NZD, SGD, HKD, CNY, MXN, ZAR
+
+---
+
+## Testing
+
+The test suite lives in `tests.cpp` and uses a minimal pass/fail framework with no external dependencies.
+
+### Build and Run
+
+```bash
+g++ -std=c++17 -fdiagnostics-color=always -g \
+    Counterparty.cpp Order.cpp OrderBook.cpp OrderManager.cpp SubBook.cpp \
+    MarketPrice.cpp MarketManager.cpp TradeManager.cpp EventBus.cpp \
+    tests.cpp -o run_tests
+
+./run_tests                        # all 12 sections (167 checks)
+./run_tests "Cascade Fills"        # one section in isolation
+./run_tests "Trade Pricing"
+./run_tests "Price Boundary"
+```
+
+Sections are filtered by a case-sensitive substring match on the section name. All orders still execute when a filter is active (so book state remains consistent), but only checks inside the matching section count toward the result.
+
+### Test Sections (167 tests total)
+
+| # | Section | Tests | What is verified |
+|---|---|---|---|
+| 1 | Order Routing | 20 | All 10 order types route to the correct side |
+| 2 | Buy-Side Price Priority | 3 | `begin()` returns best bid (highest price) |
+| 3 | Sell-Side Price Priority | 3 | `begin()` returns best ask (lowest price) |
+| 4 | Time Priority (FIFO) | 7 | Orders at the same price level fill in strict insertion order |
+| 5 | Order Cancellation | 6 | Level removed on last cancel; preserved on partial cancel; invalid ID is a no-op |
+| 6 | Counterparty Tracking | 14 | IDs accumulate on submit, removed on cancel; two counterparties track independently |
+| 7 | SPOT Matching Engine | 40 | Exact match, partial buy/ask fills, multi-level sweeps, no-match guard, sell-exact mirror |
+| 8 | Trade Pricing | 4 | Execution always occurs at the maker's (standing order's) price, not the aggressor's |
+| 9 | FIFO Fill Order | 12 | Multiple resting orders at the same price fill in arrival order |
+| 10 | Trade Notification Details | 11 | Order IDs, prices, counterparty names, and fill quantities in `TradeNotification` |
+| 11 | Cascade Fills | 20 | Partially-filled order remainder is matchable by a subsequent incoming order |
+| 12 | Price Boundary Conditions | 11 | `bid >= ask` is inclusive; one pip below/above → no trade |
+
+---
+
+## Current Status
+
+- SPOT order matching is fully implemented with partial fills and counterparty notifications
+- REST API and SSE streaming are live — the React UI can submit/cancel orders and see real-time book and trade updates
+- `MarketManager` remains a stub (no live data feeds)
+- MARKET, LIMIT, STOP, and SWAP orders are queued but not yet matched against each other
+- No persistence layer — all state is in-memory
+- HTTP requests are serialised through a single mutex; the matching engine is not independently thread-safe
 
 ---
 
@@ -969,7 +1217,7 @@ The `auto& map` parameter accepts either map type at compile time, eliminating t
 
 TradingSystem demonstrates that a correct, low-latency order matching engine with real-time UI streaming can be built in a few thousand lines of standard C++ and React, without any external C++ library beyond a single-header HTTP server.
 
-### Possible Next Steps
+### Planned Next Steps
 
 | Area | Description |
 |---|---|
